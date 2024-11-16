@@ -19,7 +19,7 @@ from guided_diffusion.script_util import create_model, create_classifier, classi
 import random
 
 import lpips
-
+import cv2
 
 loss_fn_alex = lpips.LPIPS(net='alex') # net='alex' best forward scores
 
@@ -78,6 +78,18 @@ def get_beta_schedule(beta_schedule, *, beta_start, beta_end, num_diffusion_time
     assert betas.shape == (num_diffusion_timesteps,)
     return betas
 
+class CustomDataset(data.Dataset):
+    def __init__(self, original_dataset):
+        self.dataset = original_dataset
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, index):
+        sample, target = self.dataset[index]
+        idx = self.dataset.indices[index]
+        image_path = self.dataset.dataset.samples[idx][0]  # Get the image path
+        return sample, target, image_path
 
 class Diffusion(object):
     def __init__(self, args, config, device=None):
@@ -241,8 +253,10 @@ class Diffusion(object):
 
         g = torch.Generator()
         g.manual_seed(args.seed)
+
+        custom_test_dataset = CustomDataset(test_dataset)
         val_loader = data.DataLoader(
-            test_dataset,
+            custom_test_dataset,
             batch_size=config.sampling.batch_size,
             shuffle=True,
             num_workers=config.data.num_workers,
@@ -381,7 +395,15 @@ class Diffusion(object):
 
         img_ind = -1
 
-        for x_orig, classes in pbar:
+        #initialize the face detector
+        
+        deid = True
+        if deid:
+            face_detector = cv2.CascadeClassifier('haarcascade_frontalface_default.xml')
+        else:
+            face_detector = None
+        detections = []
+        for x_orig, classes, img_path in pbar:
 
             img_ind = img_ind + 1
 
@@ -444,9 +466,22 @@ class Diffusion(object):
                 config.data.image_size,
                 device=self.device,
             )
-
+            save_imgs = False
+            folder_for_all_steps_img=None
+            if deid:
+                image_type = os.path.basename(img_path[0])[-4:]
+                image_name = os.path.basename(img_path[0])[:-4]
+                parent_dir_name = os.path.basename(os.path.dirname(img_path[0]))
+                parent_target_dir = os.path.dirname(self.args.image_folder)
+                target_path = os.path.join(parent_target_dir,parent_dir_name+'_deid')
+                parent_folder_name_ds = os.path.basename(os.path.dirname(img_path[0]))
+                dataset_inference_path = os.path.join(parent_target_dir,parent_folder_name_ds)
+            if save_imgs:
+                folder_for_all_steps_img = os.path.join(parent_target_dir,image_name)
+            # Get the actual indices of the images in the dataset
             with torch.no_grad():           
-                x, _ = ddpg_diffusion(x, model, self.betas, A_funcs, y, sigma_y, cls_fn=cls_fn, classes=classes, config=config, args=args)
+                x, _ = ddpg_diffusion(x, model, self.betas, A_funcs, y, sigma_y, cls_fn=cls_fn, classes=classes, config=config, args=args,
+                                       deid=deid, ckpt_imgs_path=folder_for_all_steps_img,face_detector=face_detector, detections=detections)
                 
                 #x, _ = ddpg_diffusion_tom(x, model, self.betas, A_funcs, y, sigma_y, cls_fn=cls_fn, classes=classes, config=config, args=args)
 
@@ -457,9 +492,17 @@ class Diffusion(object):
             x = [inverse_data_transform(config, xi) for xi in x]
 
             for j in range(x[0].size(0)):
-                tvu.save_image(
-                    x[0][j], os.path.join(self.args.image_folder, f"{idx_so_far + j}_{0}.png")
-                )
+                if not deid:
+                    tvu.save_image(
+                        x[0][j], os.path.join(self.args.image_folder, f"{idx_so_far + j}_{0}.png")
+                    )
+                else:
+                    if not os.path.exists(dataset_inference_path):
+                        os.mkdir(dataset_inference_path)
+                    tvu.save_image(
+                        x[0][j], os.path.join(dataset_inference_path, f"{image_name}{image_type}")
+                    )
+
                 orig = inverse_data_transform(config, x_orig[j])
                 mse = torch.mean((x[0][j].to(self.device) - orig) ** 2)
                 psnr = 10 * torch.log10(1 / mse)

@@ -1,0 +1,11 @@
+# Ignore node_modules directory
+exp/datasets/
+*/__pycache__/
+*.png
+*.csv
+*.jpg
+*.bin
+*.zip
+*.xml
+*.ckpt
+model_dlib/
