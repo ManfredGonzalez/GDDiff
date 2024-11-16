@@ -8,4 +8,5 @@ exp/datasets/
 *.zip
 *.xml
 *.ckpt
+*.pt
 model_dlib/
