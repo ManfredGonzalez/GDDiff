@@ -10,3 +10,5 @@ exp/datasets/
 *.ckpt
 *.pt
 model_dlib/
+*.txt
+custom_run.py
