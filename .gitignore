@@ -12,3 +12,4 @@ exp/datasets/
 model_dlib/
 *.txt
 custom_run.py
+*.pdf

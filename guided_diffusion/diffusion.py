@@ -466,7 +466,7 @@ class Diffusion(object):
                 config.data.image_size,
                 device=self.device,
             )
-            save_imgs = False
+            save_imgs = True
             folder_for_all_steps_img=None
             if deid:
                 image_type = os.path.basename(img_path[0])[-4:]
