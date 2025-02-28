@@ -11,12 +11,12 @@ import cv2
 
 class_num = 951
 
-def save_img(i,path,config,img):
+def save_img(i,path,config,img,b_num):
     if not os.path.exists(path):
         os.mkdir(path)
     tvu.save_image(
         inverse_data_transform(config, img), 
-        os.path.join(path,f'{i}.png')
+        os.path.join(path,f'{i}_{b_num}.png')
     )
 def save_heatmap(image, path):
     plt.figure(figsize=(6, 6))
@@ -51,6 +51,34 @@ def save_gaussian_heatmap(kernel, path):
     plt.axis('off')
     plt.savefig(path, bbox_inches='tight', pad_inches=0)
     plt.close()
+def obfuscate_tensor_region(tensor, epsilon, bbox):
+    x, y, w, h = bbox
+    # Extract the region of interest (ROI)
+    roi = tensor[:, :, y:y+h, x:x+w]
+    
+    # Get the current min and max of the ROI to determine pixel range
+    pixel_range = roi.max() - roi.min()
+    
+    # Compute sensitivity for the ROI
+    n = w * h  # Pixel count within the bounding box per channel
+    c = tensor.size(1)  # Number of channels
+    sensitivity = pixel_range * n * c
+
+    # Compute Laplace scale
+    #scale = sensitivity / epsilon
+    scale = sensitivity / (sensitivity*epsilon)
+
+    # Generate Laplace noise for the ROI
+    noise = torch.from_numpy(
+        np.random.laplace(0, scale.item(), roi.shape).astype(np.float32)
+    ).to(tensor.device)
+
+    # Add noise to the ROI
+    obfuscated_roi = roi + noise
+
+    # Replace the obfuscated region back in the original tensor
+    tensor[:, :, y:y+h, x:x+w] = obfuscated_roi
+    return tensor
 def create_gaussian_kernel(shape, bbox, variance):
     """
     Creates a Gaussian kernel with the specified shape and variance centered on the bbox center,
@@ -80,6 +108,57 @@ def create_gaussian_kernel(shape, bbox, variance):
     kernel[y_start:y_end, x_start:x_end] = inverted_gaussian
 
     return kernel
+def create_laplacian_kernel(shape, bbox, variance):
+    """
+    Creates a Laplacian kernel centered on the bbox center,
+    applied only within the bbox area, and sets the area outside the bbox to ones.
+    :param shape: Tuple (H, W) for the image dimensions.
+    :param bbox: Tuple (x, y, w, h) representing the bounding box.
+    :param variance: Variance (scale factor) of the Laplacian function.
+    :return: Laplacian kernel of shape (H, W).
+    """
+    H, W = shape
+    x_center = bbox[0] + bbox[2] // 2
+    y_center = bbox[1] + bbox[3] // 2
+    x_start, x_end = bbox[0], bbox[0] + bbox[2]
+    y_start, y_end = bbox[1], bbox[1] + bbox[3]
+
+    # Initialize the kernel with ones
+    kernel = np.ones((H, W), dtype=np.float32)
+
+    # Create a grid within the bounding box area
+    y, x = np.ogrid[y_start:y_end, x_start:x_end]
+
+    # Compute the Laplacian function inside the bbox
+    #Mexican Hat (Laplacian of Gaussian, LoG) function
+    distance_squared = (x - x_center) ** 2 + (y - y_center) ** 2
+    laplacian = (1 - (distance_squared / (2 * variance))) * np.exp(-distance_squared / (2 * variance))
+
+    # Normalize and invert the Laplacian
+    inverted_laplacian = 1 - laplacian  # Invert values
+
+    # Place the inverted Laplacian in the bounding box area of the kernel
+    kernel[y_start:y_end, x_start:x_end] = inverted_laplacian
+
+    return kernel
+def create_zero_kernel(shape, bbox):
+    """
+    Creates a kernel with ones everywhere except for the bbox region, which is set to zero.
+    :param shape: Tuple (H, W) for the image dimensions.
+    :param bbox: Tuple (x, y, w, h) representing the bounding box.
+    :return: Kernel of shape (H, W) with zeros in the bbox area.
+    """
+    H, W = shape
+    x_start, x_end = bbox[0], bbox[0] + bbox[2]
+    y_start, y_end = bbox[1], bbox[1] + bbox[3]
+
+    # Initialize the kernel with ones
+    kernel = np.ones((H, W), dtype=np.float32)
+
+    # Set the bounding box area to zero
+    kernel[y_start:y_end, x_start:x_end] = 0
+
+    return kernel
 def get_average_bbox_and_std(rectangles_list):
     # Calculate average and standard deviation if we have more than one rectangle
     if len(rectangles_list) > 1:
@@ -95,38 +174,84 @@ def get_average_bbox_and_std(rectangles_list):
         avg_rect = rectangles_list[0]
         std_dev_rect = np.zeros(4)  # No deviation with only one rectangle
     return avg_rect,std_dev_rect
+def plot_alphas(alphas,path):
+    # Generate x values as indices
+    x_values = list(range(len(alphas)))
+
+    # Plot the values
+    plt.plot(x_values, alphas, marker='o', linestyle='-')
+
+    # Label the axes
+    plt.xlabel("t")
+    plt.ylabel("alphas")
+
+    # Show the plot
+    # Flip only the x-axis labels
+
+    tick_positions = np.linspace(0, len(x_values) - 1, num=10, dtype=int)  # Choose only 10 tick positions
+    plt.xticks(ticks=tick_positions, labels=[x_values[i] for i in tick_positions][::-1])
+
+    plt.savefig(path, bbox_inches='tight', pad_inches=0)
+    plt.close()
+
+def get_percentile_index(lst, percentile=70):
+    idx = int(len(lst) * (percentile / 100))  # Compute index
+    idx = min(idx, len(lst) - 1)  # Ensure it's within bounds
+    return idx  # Return the index
+
 def ddpg_diffusion(x, model, b, A_funcs, y, sigma_y, cls_fn=None, classes=None, config=None, args=None,
-                   deid=False,ckpt_imgs_path=None,face_detector=None, detections=None):
+                   deid=False,ckpt_imgs_path=None,face_bbox = None, gaussian_kern=False, diff_priv=False, per = 1):
     if ckpt_imgs_path is not None:
         if os.path.exists(ckpt_imgs_path):
             shutil.rmtree(ckpt_imgs_path)
         os.mkdir(ckpt_imgs_path)
+    alphas = []
     with torch.no_grad():
 
         # setup iteration variables
         skip = config.diffusion.num_diffusion_timesteps//config.sampling.T_sampling
-        n = x.size(0)
+        
         x0_preds = []
-        xs = [x]
+        k_avg = False
+        if isinstance(x, list):
+            x = torch.cat(x, dim=0)
+        
+        xs = [x.to('cuda')]   
+        
 
         # generate time schedule
         times = get_schedule_jump(config.sampling.T_sampling, 1, 1)
-        time_pairs = list(zip(times[:-1], times[1:]))        
-        
-        bbox_found = False
+        time_pairs = list(zip(times[:-1], times[1:]))
+        percentile_to_mean = get_percentile_index(time_pairs, percentile=100*per)        
+        if face_bbox:
+            # get the dimensions of the bounding box
+            face_bbox_width, face_bbox_height = face_bbox[2], face_bbox[3]
+            max_variance = face_bbox_width * face_bbox_height
+            min_variance = 0.01 * max_variance
+            # Generate the list of variances corresponding to the number of steps
+            num_steps = len(time_pairs)
+            variances = np.linspace(min_variance, max_variance, num_steps)
+            sampled_variance = np.random.choice(variances)
         # reverse diffusion sampling
+        total_steps = len(time_pairs)
+        mean_step = 0
         for step_idx, (i, j) in tqdm(enumerate(time_pairs), total=len(time_pairs)):
-
+            xt = xs[-1].to(x.device)
+            n = xt.size(0)
             i, j = i*skip, j*skip
             if j<0: j=-1 
 
             if j < i: # normal sampling 
-
                 t = (torch.ones(n) * i).to(x.device)
-                next_t = (torch.ones(n) * j).to(x.device)
+                if k_avg:
+                    mean_step += 1
+                    next_t = (torch.ones(n+1) * j).to(x.device)
+                else:
+                    next_t = (torch.ones(n) * j).to(x.device)
                 at = compute_alpha(b, t.long())
+                alphas.append(at[0].item())
                 at_next = compute_alpha(b, next_t.long())
-                xt = xs[-1].to('cuda')
+                
                 if cls_fn == None:
                     et = model(xt, t)
                 else:
@@ -140,6 +265,12 @@ def ddpg_diffusion(x, model, b, A_funcs, y, sigma_y, cls_fn=None, classes=None, 
 
                 # estimate x0
                 x0_t = (xt - et * (1 - at).sqrt()) / at.sqrt()
+                if k_avg:
+                    # Compute the mean along the batch dimension (dim=0)
+                    mean_tensor_x_0 = x0_t.mean(dim=0, keepdim=True)  # Keep the batch dimension
+                    # Concatenate along the batch dimension
+                    x0_t = torch.cat([x0_t, mean_tensor_x_0], dim=0)
+                    n = n+1
                 '''
                 x0_t:
                 This variable corresponds to the estimation of the original image (x0) 
@@ -147,31 +278,11 @@ def ddpg_diffusion(x, model, b, A_funcs, y, sigma_y, cls_fn=None, classes=None, 
                 in the algorithm
                 This matches the equation, where et is the predicted noise
                 '''
-
-                # get the coordinates of the face from the x0_t image
-                if deid and not bbox_found:
-                    # Convert the RGB image obtained from inverse_data_transform
-                    rgb_image = inverse_data_transform(config, x0_t).to('cpu').squeeze().permute(1, 2, 0).numpy()
-                    # Convert the image to uint8
-                    rgb_image_uint8 = (rgb_image * 255).astype(np.uint8)
-                    # Convert the RGB image to BGR (OpenCV format)
-                    bgr_image = cv2.cvtColor(rgb_image_uint8, cv2.COLOR_RGB2BGR)
-                    # Get the bounding box coordinates of the face
-                    x_box, y_box, width, height = get_face_bbox(face_detector, bgr_image)
-                    if x_box is not None:
-                        bbox_found = True
-                        face_bbox = (x_box, y_box, width, height)
-                        detections.append(face_bbox)
-                        if len(detections)>300:
-                            average_bbox,_ = get_average_bbox_and_std(detections)
-                            detections.clear()
-                            detections.append(average_bbox)
-                    else:
-                        face_bbox,_ = get_average_bbox_and_std(detections)
                     
                 if ckpt_imgs_path is not None:
                     path_for_img = os.path.join(ckpt_imgs_path,'x0_t')
-                    save_img(i,path_for_img,config,x0_t)
+                    for b_idx in range(x0_t.size(0)):
+                        save_img(i,path_for_img,config,x0_t[b_idx].unsqueeze(0).clone(),b_idx)
                 if sigma_y==0.:
                     delta_t = 0
                     weight_noise_t = 1
@@ -206,37 +317,78 @@ def ddpg_diffusion(x, model, b, A_funcs, y, sigma_y, cls_fn=None, classes=None, 
                         This indicates that it's the gradient of the least squares loss, 
                         scaled by a constant c
                 '''
-                if bbox_found:
-                    # Calculate variance based on the step (e.g., gradually decreasing towards step 0)
-                    max_variance = 10000  # adjust this based on your image size
-                    min_variance = 100  # minimum variance when close to step 0
-                    # Generate the list of variances corresponding to the number of steps
-                    num_steps = len(time_pairs)
-                    variances = np.linspace(min_variance, max_variance, num_steps)
+                if face_bbox is not None and gaussian_kern:
                     # Retrieve the variance for the current step
                     current_variance = variances[step_idx]
                     # Create the Gaussian kernel based on the bounding box and the calculated variance
                     gaussian_kernel = create_gaussian_kernel((x0_t.size(2), x0_t.size(3)), face_bbox, current_variance)
-                    gaussian_kernel = torch.tensor(gaussian_kernel, dtype=torch.float32).to(x0_t.device)
-                    # Create the Gaussian kernel based on the bounding box and the calculated variance
-                    H, W = x0_t.size(2), x0_t.size(3)
-                    gaussian_kernel = create_gaussian_kernel((H, W), face_bbox, current_variance)
                     if ckpt_imgs_path is not None:
                         path_for_img = os.path.join(ckpt_imgs_path,'gaussian_kernel_heatmap')
                         if not os.path.exists(path_for_img):
                             os.mkdir(path_for_img)
                         # Save the Gaussian kernel as a heatmap image
                         save_gaussian_heatmap(gaussian_kernel, os.path.join(path_for_img,f'{i}.png'))
+                    laplacian_kernel = create_laplacian_kernel((x0_t.size(2), x0_t.size(3)), face_bbox, current_variance)
+                    if ckpt_imgs_path is not None:
+                        path_for_img = os.path.join(ckpt_imgs_path,'laplacian_kernel_heatmap')
+                        if not os.path.exists(path_for_img):
+                            os.mkdir(path_for_img)
+                        # Save the Gaussian kernel as a heatmap image
+                        save_gaussian_heatmap(laplacian_kernel, os.path.join(path_for_img,f'{i}.png'))
+                    
+                    #zerokernel = create_zero_kernel((x0_t.size(2), x0_t.size(3)), face_bbox)
+                    gaussian_kernel_fixed = create_gaussian_kernel((x0_t.size(2), x0_t.size(3)), face_bbox, sampled_variance)
+                    if ckpt_imgs_path is not None and n==3:
+                        path_for_img = os.path.join(ckpt_imgs_path,f'gaussian_kernel_fixed_{str(sampled_variance)}_heatmap')
+                        if not os.path.exists(path_for_img):
+                            os.mkdir(path_for_img)
+                        # Save the Gaussian kernel as a heatmap image
+                        save_gaussian_heatmap(gaussian_kernel_fixed, os.path.join(path_for_img,f'{i}.png'))
+                    gaussian_kernel_fixed_tensor = torch.tensor(gaussian_kernel_fixed, dtype=torch.float32).to(x0_t.device)
+                    zerokernel = create_zero_kernel((x0_t.size(2), x0_t.size(3)), face_bbox)#np.ones((x0_t.size(2), x0_t.size(3)), dtype=np.float32)
+                    if ckpt_imgs_path is not None:
+                        path_for_img = os.path.join(ckpt_imgs_path,f'zerokernel_fixed_heatmap')
+                        if not os.path.exists(path_for_img):
+                            os.mkdir(path_for_img)
+                        # Save the Gaussian kernel as a heatmap image
+                        save_gaussian_heatmap(zerokernel, os.path.join(path_for_img,f'{i}.png'))
+                    zerokernel_tensor = torch.tensor(zerokernel, dtype=torch.float32).to(x0_t.device)
                     # Convert the Gaussian kernel to a tensor and move it to the device
                     gaussian_kernel_tensor = torch.tensor(gaussian_kernel, dtype=torch.float32).to(x0_t.device)
+                    laplacian_kernel_tensor = torch.tensor(laplacian_kernel, dtype=torch.float32).to(x0_t.device)
+                    
+                    if n==3:
+                        # Ensure each kernel has shape (1, 256, 256) by adding a channel dimension
+                        gaussian_kernel_tensor = gaussian_kernel_tensor.unsqueeze(0)  # (1, 256, 256)
+                        laplacian_kernel_tensor = laplacian_kernel_tensor.unsqueeze(0)  # (1, 256, 256)
+                        zerokernel_tensor = zerokernel_tensor.unsqueeze(0)
+
+                        # Stack along the batch dimension (B=3)
+                        batch_kernel_tensor = torch.stack([
+                            gaussian_kernel_tensor, 
+                            laplacian_kernel_tensor, 
+                            zerokernel_tensor
+                        ], dim=0)  # Shape: (3, 1, 256, 256)
+                    elif n==2 and not k_avg:
+                        # Ensure each kernel has shape (1, 256, 256) by adding a channel dimension
+                        gaussian_kernel_tensor = gaussian_kernel_tensor.unsqueeze(0)  # (1, 256, 256)
+                        laplacian_kernel_tensor = laplacian_kernel_tensor.unsqueeze(0)  # (1, 256, 256)
+                        # Stack along the batch dimension (B=3)
+                        batch_kernel_tensor = torch.stack([
+                            gaussian_kernel_tensor, 
+                            laplacian_kernel_tensor
+                        ], dim=0)  # Shape: (3, 1, 256, 256)
+                    else:
+                        batch_kernel_tensor = gaussian_kernel_tensor
                 
                 
                 if ckpt_imgs_path is not None:
                     path_for_img = os.path.join(ckpt_imgs_path,'guidance_BP')
                     if not os.path.exists(path_for_img):
                         os.mkdir(path_for_img)
-                    save_heatmap(inverse_data_transform(config, guidance_BP).to('cpu').squeeze().permute(1, 2, 0), 
-                                 os.path.join(path_for_img,f"{i}.png"))
+                    for b_idx in  range(guidance_BP.size(0)):
+                        save_heatmap(inverse_data_transform(config, guidance_BP[b_idx].unsqueeze(0).clone()).to('cpu').squeeze().permute(1, 2, 0), 
+                                    os.path.join(path_for_img,f"{i}_b_{b_idx}.png"))
 
                     # Normalize guidance_LS to have the same range as guidance_BP
                     min_BP, max_BP = guidance_BP.min(), guidance_BP.max()
@@ -247,14 +399,12 @@ def ddpg_diffusion(x, model, b, A_funcs, y, sigma_y, cls_fn=None, classes=None, 
                     path_for_img = os.path.join(ckpt_imgs_path,'guidance_LS')
                     if not os.path.exists(path_for_img):
                         os.mkdir(path_for_img)
-                    save_heatmap(inverse_data_transform(config, 
-                                                        guidance_LS_standardized).to('cpu').squeeze().permute(1, 2, 0), 
-                                 os.path.join(path_for_img,f"{i}.png"))
-                if deid and bbox_found:
-                    if i==0:
-                        print('stop')
-                    guidance_BP = guidance_BP*gaussian_kernel_tensor
-                    guidance_LS = guidance_LS*gaussian_kernel_tensor
+                    for b_idx in  range(guidance_LS_standardized.size(0)):
+                        save_heatmap(inverse_data_transform(config, 
+                                                            guidance_LS_standardized[b_idx].unsqueeze(0).clone()).to('cpu').squeeze().permute(1, 2, 0), 
+                                    os.path.join(path_for_img,f"{i}_b_{b_idx}.png"))
+                if k_avg:
+                    at = compute_alpha(b, (torch.ones(n) * i).to(x.device).long()).to(x.device)
                 if args.step_size_mode==0:
                     step_size_LS = 1
                     step_size_BP = 1
@@ -269,9 +419,33 @@ def ddpg_diffusion(x, model, b, A_funcs, y, sigma_y, cls_fn=None, classes=None, 
                     step_size = 1
                 else:
                     assert 1, "unsupported step-size mode"
+                    
+                if deid and face_bbox is not None and gaussian_kern and not diff_priv:
+                    guidance_BP = guidance_BP*batch_kernel_tensor
+                    guidance_LS = guidance_LS*batch_kernel_tensor
+                    # data fidelity guidance
+                    xt_next_tilde = x0_t - step_size * ( step_size_BP * (1-delta_t) * guidance_BP + step_size_LS * delta_t * scale_gLS * guidance_LS )
+                elif deid and face_bbox and diff_priv and not gaussian_kern:
+                    # Set epsilon for privacy
+                    epsilon = 1.25  # Adjust as needed
 
-                # data fidelity guidance
-                xt_next_tilde = x0_t - step_size * ( step_size_BP * (1-delta_t) * guidance_BP + step_size_LS * delta_t * scale_gLS * guidance_LS )
+                    # Obfuscate guidance_BP and guidance_LS
+                    guidance_BP_obfuscated = obfuscate_tensor_region(guidance_BP, epsilon,face_bbox)
+                    guidance_LS_obfuscated = obfuscate_tensor_region(guidance_LS, epsilon,face_bbox)
+                    # data fidelity guidance
+                    xt_next_tilde = x0_t - step_size * ( step_size_BP * (1-delta_t) * guidance_BP_obfuscated + step_size_LS * delta_t * scale_gLS * guidance_LS_obfuscated )
+                elif deid and face_bbox is not None and gaussian_kern and diff_priv:
+                    # Set epsilon for privacy
+                    epsilon = 1.25  # Adjust as needed
+
+                    # Obfuscate guidance_BP and guidance_LS
+                    guidance_BP_obfuscated = obfuscate_tensor_region(guidance_BP, epsilon,face_bbox)*batch_kernel_tensor
+                    guidance_LS_obfuscated = obfuscate_tensor_region(guidance_LS, epsilon,face_bbox)*batch_kernel_tensor
+                    # data fidelity guidance
+                    xt_next_tilde = x0_t - step_size * ( step_size_BP * (1-delta_t) * guidance_BP_obfuscated + step_size_LS * delta_t * scale_gLS * guidance_LS_obfuscated )
+                else:
+                    # data fidelity guidance
+                    xt_next_tilde = x0_t - step_size * ( step_size_BP * (1-delta_t) * guidance_BP + step_size_LS * delta_t * scale_gLS * guidance_LS )
                 '''
                     xt_next_tilde: This is the intermediate state before noise is reintroduced 
                     in the next step of the diffusion process. It is calculated using a 
@@ -282,8 +456,20 @@ def ddpg_diffusion(x, model, b, A_funcs, y, sigma_y, cls_fn=None, classes=None, 
                 '''
                 if ckpt_imgs_path is not None:
                     path_for_img = os.path.join(ckpt_imgs_path,'xt_next_tilde')
-                    save_img(i,path_for_img,config,xt_next_tilde)
+                    for b_idx in  range(xt_next_tilde.size(0)):
+                        save_img(i,path_for_img,config,xt_next_tilde[b_idx].unsqueeze(0).clone(),b_idx)
                 # compute effective noise
+                if k_avg:
+                    # Extract the last element (mean tensor we added)
+                    xt_next_tilde_mean = xt_next_tilde[-1].unsqueeze(0).clone()  # or x_augmented[3] if batch size was originally 3
+                    
+                    xt_next_tilde = xt_next_tilde[:-1]
+                    #revert it to the original shape
+                    x0_t = x0_t[:-1]
+                    next_t = next_t[:-1]#(torch.ones(n) * j).to(x.device)
+                    at_next = at_next[:-1]#compute_alpha(b, next_t.long())
+                    at = at[:-1]#compute_alpha(b, (torch.ones(n) * i).to(x.device).long())
+                    weight_noise_t = weight_noise_t[:-1]
                 et_hat = ( xt - at.sqrt() * xt_next_tilde ) / (1 - at).sqrt()
 
                 c1 = 0
@@ -292,8 +478,17 @@ def ddpg_diffusion(x, model, b, A_funcs, y, sigma_y, cls_fn=None, classes=None, 
                     zeta = args.zeta
                     c1 = (1 - at_next).sqrt() * np.sqrt(zeta)
                     c2 = (1 - at_next).sqrt() * np.sqrt(1-zeta)  * weight_noise_t
+                et_gauss = torch.randn_like(x0_t)
+                xt_next = at_next.sqrt() * xt_next_tilde + c1 * et_gauss + c2 * et_hat
 
-                xt_next = at_next.sqrt() * xt_next_tilde + c1 * torch.randn_like(x0_t) + c2 * et_hat
+                if k_avg:
+                    # Compute the mean along the batch dimension (dim=0)
+                    et_hat_avg = et_hat.mean(dim=0, keepdim=True)  # Keep the batch dimension
+                    et_gauss_mean = torch.randn_like(mean_tensor_x_0)
+                    at_next_mean = at_next[-1].sqrt().unsqueeze(0)
+                    xt_next_mean =  at_next_mean * xt_next_tilde_mean + c1[-1].unsqueeze(0) * et_gauss_mean + c2[-1].unsqueeze(0) * et_hat_avg
+                    xt_next = torch.cat([xt_next, xt_next_mean], dim=0)
+
                 '''
                 xt_next:
                         This is the final state of the image after adding noise to the 
@@ -302,16 +497,29 @@ def ddpg_diffusion(x, model, b, A_funcs, y, sigma_y, cls_fn=None, classes=None, 
                 '''
                 if ckpt_imgs_path is not None:
                     path_for_img = os.path.join(ckpt_imgs_path,'xt_next')
-                    save_img(i,path_for_img,config,xt_next)
+                    for b_idx in  range(xt_next.size(0)):
+                        save_img(i,path_for_img,config,xt_next[b_idx].unsqueeze(0).clone(),b_idx)
 
+                if ckpt_imgs_path is not None and k_avg:
+                    path_for_img = os.path.join(ckpt_imgs_path,'xt_next_mean')
+                    for b_idx in  range(xt_next_mean.size(0)):
+                        save_img(i,path_for_img,config,xt_next_mean[b_idx].unsqueeze(0).clone(),b_idx)
                 x0_preds.append(x0_t.to('cpu'))
                 xs.append(xt_next.to('cpu'))
+
+                if (step_idx == percentile_to_mean) and deid:
+                    k_avg = True
+                if mean_step ==1:
+                    k_avg = False
+                    mean_step = 0
 
             else: 
                 assert 1, "Unexpected case"
         
         if sigma_y != 0.:  # if there is noise, take the denoised result
             xs.append(x0_t.to('cpu'))
+    if ckpt_imgs_path is not None:
+        plot_alphas(alphas,os.path.join(ckpt_imgs_path,'alphas_plot.pdf'))
 
     return [xs[-1]], [x0_preds[-1]]
 
@@ -357,5 +565,3 @@ def _check_times(times, t_0, T_sampling):
     for t in times:
         assert t >= t_0, (t, t_0)
         assert t <= T_sampling, (t, T_sampling)
-
-

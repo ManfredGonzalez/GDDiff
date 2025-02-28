@@ -95,6 +95,9 @@ def parse_args_and_config():
     parser.add_argument(
         "--step_size_mode", type=int, default=1, help="0 (fixed 1) | 1 (certain decay as in paper) | 2 (fixed 1 for BP, decay for LS)" # you can add other choices
     )
+    parser.add_argument(
+        "--per", type=float, default=0.3, help="level of randomness in the mean inference"
+    )
 
     
 

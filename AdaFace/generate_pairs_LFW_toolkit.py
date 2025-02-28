@@ -29,4 +29,4 @@ def generate_txt_files(csv_file, seed_name):
 # Example usage
 # Replace 'your_csv_file.csv' with your actual CSV file name
 # Replace 'seed_name' with your desired seed name
-generate_txt_files('exp/datasets/LFW_benchmark_pairs_mapping.csv', 'LFW_benchmark')
+generate_txt_files('/home/tico/Desktop/master_research/DeiDDPG/exp/datasets/CPLFW_benchmark_pairs_mapping.csv', 'CPLFW_benchmark_aligned')

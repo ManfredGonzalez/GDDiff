@@ -90,7 +90,15 @@ class CustomDataset(data.Dataset):
         idx = self.dataset.indices[index]
         image_path = self.dataset.dataset.samples[idx][0]  # Get the image path
         return sample, target, image_path
-
+def get_face_bbox(face_detector,image):
+    # Convert the image to grayscale
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    # Detect faces in the image
+    faces = face_detector.detectMultiScale(gray)
+    if faces is None or len(faces)==0:
+        return None,None,None,None
+    x, y, w, h = faces[0]
+    return x, y, w, h
 class Diffusion(object):
     def __init__(self, args, config, device=None):
         self.args = args
@@ -398,6 +406,7 @@ class Diffusion(object):
         #initialize the face detector
         
         deid = True
+        k = 2
         if deid:
             face_detector = cv2.CascadeClassifier('haarcascade_frontalface_default.xml')
         else:
@@ -413,9 +422,23 @@ class Diffusion(object):
                 kernel = torch.from_numpy(Kernel(size=(61, 61), intensity=0.5).kernelMatrix)
                 A_funcs = Deblurring_fft(kernel / kernel.sum(), config.data.channels, self.config.data.image_size, self.device)
                 np.random.seed(seed=args.seed) # Back to original seed for reproducibility
-
+            
             x_orig = x_orig.to(self.device)
             x_orig = data_transform(self.config, x_orig)
+            if deid:
+                rgb_image = inverse_data_transform(config, x_orig).to('cpu').squeeze().permute(1, 2, 0).numpy()
+                # Convert the image to uint8
+                rgb_image_uint8 = (rgb_image * 255).astype(np.uint8)
+                # Convert the RGB image to BGR (OpenCV format)
+                bgr_image = cv2.cvtColor(rgb_image_uint8, cv2.COLOR_RGB2BGR)
+
+                #cv2.imwrite('output_image.jpg', cv2.cvtColor(bgr_image, cv2.COLOR_BGR2GRAY))
+
+
+                x_box, y_box, width, height = get_face_bbox(face_detector,bgr_image)
+                face_bbox = (x_box, y_box, width, height)
+            else:
+                face_bbox = None
 
             y = A_funcs.A(x_orig)
             
@@ -457,38 +480,49 @@ class Diffusion(object):
                             inverse_data_transform(config, y[i].reshape((3, h, w))),
                             os.path.join(self.args.image_folder, f"Apy/y_{idx_so_far + i}.png")
                         )
-
-            # initialize x
-            x = torch.randn(
-                y.shape[0],
-                config.data.channels,
-                config.data.image_size,
-                config.data.image_size,
-                device=self.device,
-            )
-            save_imgs = True
+            if k is not None:
+                x = [
+                    torch.randn(
+                        y.shape[0],
+                        config.data.channels,
+                        config.data.image_size,
+                        config.data.image_size,
+                        device=self.device
+                        ) for _ in range(k)
+                    ]
+            else:
+                # initialize x
+                    x = torch.randn(
+                        y.shape[0],
+                        config.data.channels,
+                        config.data.image_size,
+                        config.data.image_size,
+                        device=self.device,
+                    )
+            save_imgs = False
             folder_for_all_steps_img=None
+            diff_priv = False
+            per = 1-(self.args.per+0.1)
+            
             if deid:
+                gaussian_kern = True
                 image_type = os.path.basename(img_path[0])[-4:]
-                image_name = os.path.basename(img_path[0])[:-4]
+                image_name = os.path.basename(img_path[0])[:-4]+f"_{self.args.per}"
                 parent_dir_name = os.path.basename(os.path.dirname(img_path[0]))
                 parent_target_dir = os.path.dirname(self.args.image_folder)
                 target_path = os.path.join(parent_target_dir,parent_dir_name+'_deid')
                 parent_folder_name_ds = os.path.basename(os.path.dirname(img_path[0]))
                 dataset_inference_path = os.path.join(parent_target_dir,parent_folder_name_ds)
+            else:
+                gaussian_kern = False
             if save_imgs:
                 folder_for_all_steps_img = os.path.join(parent_target_dir,image_name)
             # Get the actual indices of the images in the dataset
             with torch.no_grad():           
                 x, _ = ddpg_diffusion(x, model, self.betas, A_funcs, y, sigma_y, cls_fn=cls_fn, classes=classes, config=config, args=args,
-                                       deid=deid, ckpt_imgs_path=folder_for_all_steps_img,face_detector=face_detector, detections=detections)
+                                       deid=deid, ckpt_imgs_path=folder_for_all_steps_img,face_bbox=face_bbox,gaussian_kern=gaussian_kern, diff_priv=diff_priv,per=per)
                 
                 #x, _ = ddpg_diffusion_tom(x, model, self.betas, A_funcs, y, sigma_y, cls_fn=cls_fn, classes=classes, config=config, args=args)
-
-
-            lpips_final = torch.squeeze(loss_fn_alex(x[0], x_orig.to('cpu'))).detach().numpy()
-            avg_lpips += lpips_final
-
             x = [inverse_data_transform(config, xi) for xi in x]
 
             for j in range(x[0].size(0)):
@@ -500,25 +534,9 @@ class Diffusion(object):
                     if not os.path.exists(dataset_inference_path):
                         os.mkdir(dataset_inference_path)
                     tvu.save_image(
-                        x[0][j], os.path.join(dataset_inference_path, f"{image_name}{image_type}")
+                        x[0][j], os.path.join(dataset_inference_path, f"{image_name}_{j}{image_type}")
                     )
 
-                orig = inverse_data_transform(config, x_orig[j])
-                mse = torch.mean((x[0][j].to(self.device) - orig) ** 2)
-                psnr = 10 * torch.log10(1 / mse)
-                logger.info("img_ind: %d, PSNR: %.2f, LPIPS: %.4f" % (img_ind, psnr, lpips_final))
-                avg_psnr += psnr
-
             idx_so_far += y.shape[0]
-
-            #pbar.set_description("Avg PSNR: %.2f, Avg LPIPS: %.4f     (** After %d iteration **)" % (avg_psnr / (idx_so_far - idx_init), avg_lpips / (idx_so_far - idx_init), idx_so_far - idx_init))
-            logger.info("Avg PSNR: %.2f, Avg LPIPS: %.4f     (** After %d iteration **)" % (avg_psnr / (idx_so_far - idx_init), avg_lpips / (idx_so_far - idx_init), idx_so_far - idx_init))
-
-
-        avg_psnr = avg_psnr / (idx_so_far - idx_init)
-        avg_lpips = avg_lpips / (idx_so_far - idx_init)
-        print("Total Average PSNR: %.2f" % avg_psnr)
-        print("Total Average LPIPS: %.4f" % avg_lpips)
-        print("Number of samples: %d" % (idx_so_far - idx_init))     
 
 

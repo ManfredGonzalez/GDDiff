@@ -13,3 +13,4 @@ model_dlib/
 *.txt
 custom_run.py
 *.pdf
+*.log

@@ -234,4 +234,4 @@ def align_faces_in_directory(target_dir):
             print(f"Warning: No face detected or alignment failed for '{image_name}'.")
 
     print(f"All aligned images are saved in '{output_dir}'.")
-align_faces_in_directory('/home/tico/Desktop/master_research/DeiDDPG/exp/datasets/arface')
+align_faces_in_directory('/home/tico/Desktop/master_classes/IBB/project/Mask_DeID_DDPG/exp/datasets/CALFW_benchmark')
