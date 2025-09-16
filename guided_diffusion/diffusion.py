@@ -20,9 +20,29 @@ import random
 
 import lpips
 import cv2
+from PIL import Image
 
 loss_fn_alex = lpips.LPIPS(net='alex') # net='alex' best forward scores
+def get_fallback_bbox(image_size, scale=0.65):
+    """
+    Generate a fallback bounding box assuming the face is centered.
+    
+    :param image_size: Tuple (width, height) of the aligned image.
+    :param scale: The proportion of the image occupied by the bounding box (default: 65%).
+    :return: (x_min, y_min, x_max, y_max) as the fallback bounding box.
+    """
+    width, height = image_size
+    bbox_size = int(min(width, height) * scale)
 
+    x_center = width // 2
+    y_center = height // 2
+
+    x_min = max(0, x_center - bbox_size // 2)
+    y_min = max(0, y_center - bbox_size // 2)
+    x_max = min(width, x_center + bbox_size // 2)
+    y_max = min(height, y_center + bbox_size // 2)
+
+    return (x_min, y_min, x_max, y_max)
 
 def get_gaussian_noisy_img(img, noise_level):
     return img + torch.randn_like(img).cuda() * noise_level
@@ -435,7 +455,18 @@ class Diffusion(object):
                 #cv2.imwrite('output_image.jpg', cv2.cvtColor(bgr_image, cv2.COLOR_BGR2GRAY))
 
 
-                x_box, y_box, width, height = get_face_bbox(face_detector,bgr_image)
+                detected_bbox = get_face_bbox(face_detector, bgr_image)
+                if detected_bbox[0] is not None:  
+                    x_box, y_box, width, height = detected_bbox
+                else:
+                    # Use fallback bounding box (assuming a PIL format for input)
+                    aligned_pil = Image.fromarray(cv2.cvtColor(bgr_image, cv2.COLOR_BGR2RGB))  # Convert to PIL format
+                    x_min, y_min, x_max, y_max = get_fallback_bbox(aligned_pil.size)
+
+                    # Convert to (x, y, width, height) format
+                    x_box, y_box = x_min, y_min
+                    width, height = x_max - x_min, y_max - y_min
+
                 face_bbox = (x_box, y_box, width, height)
             else:
                 face_bbox = None
@@ -500,6 +531,7 @@ class Diffusion(object):
                         device=self.device,
                     )
             save_imgs = False
+            only_mean = False
             folder_for_all_steps_img=None
             diff_priv = False
             per = 1-(self.args.per+0.1)
@@ -507,7 +539,7 @@ class Diffusion(object):
             if deid:
                 gaussian_kern = True
                 image_type = os.path.basename(img_path[0])[-4:]
-                image_name = os.path.basename(img_path[0])[:-4]+f"_{self.args.per}"
+                image_name = os.path.basename(img_path[0])[:-4]
                 parent_dir_name = os.path.basename(os.path.dirname(img_path[0]))
                 parent_target_dir = os.path.dirname(self.args.image_folder)
                 target_path = os.path.join(parent_target_dir,parent_dir_name+'_deid')
@@ -516,7 +548,7 @@ class Diffusion(object):
             else:
                 gaussian_kern = False
             if save_imgs:
-                folder_for_all_steps_img = os.path.join(parent_target_dir,image_name)
+                folder_for_all_steps_img = os.path.join(parent_target_dir,image_name+f"_{self.args.per}")
             # Get the actual indices of the images in the dataset
             with torch.no_grad():           
                 x, _ = ddpg_diffusion(x, model, self.betas, A_funcs, y, sigma_y, cls_fn=cls_fn, classes=classes, config=config, args=args,
@@ -524,18 +556,38 @@ class Diffusion(object):
                 
                 #x, _ = ddpg_diffusion_tom(x, model, self.betas, A_funcs, y, sigma_y, cls_fn=cls_fn, classes=classes, config=config, args=args)
             x = [inverse_data_transform(config, xi) for xi in x]
+            if not os.path.exists(dataset_inference_path):
+                os.mkdir(dataset_inference_path)
 
-            for j in range(x[0].size(0)):
-                if not deid:
-                    tvu.save_image(
-                        x[0][j], os.path.join(self.args.image_folder, f"{idx_so_far + j}_{0}.png")
-                    )
-                else:
-                    if not os.path.exists(dataset_inference_path):
-                        os.mkdir(dataset_inference_path)
-                    tvu.save_image(
-                        x[0][j], os.path.join(dataset_inference_path, f"{image_name}_{j}{image_type}")
-                    )
+            if only_mean:
+                dataset_inference_path2 = os.path.join(dataset_inference_path,f"{self.args.per}_mean")
+                if not os.path.exists(dataset_inference_path2):
+                    os.mkdir(dataset_inference_path2)
+                tvu.save_image(
+                    x[0][2], os.path.join(dataset_inference_path2, f"{image_name}{image_type}")
+                )
+            else:
+                for j in range(x[0].size(0)):
+                    if not deid:
+                        tvu.save_image(
+                            x[0][j], os.path.join(self.args.image_folder, f"{idx_so_far + j}_{0}.png")
+                        )
+                    else:
+                        method = "gauss"
+                        if j == 1:
+                            method = "Lapl"
+                        elif j == 2:
+                            method = "mean"
+
+                        
+                        
+                        dataset_inference_path2 = os.path.join(dataset_inference_path,f"{self.args.per}_{method}")
+                        if not os.path.exists(dataset_inference_path2):
+                            os.mkdir(dataset_inference_path2)
+                        tvu.save_image(
+                            x[0][j], os.path.join(dataset_inference_path2, f"{image_name}{image_type}")
+                        )
+                        
 
             idx_so_far += y.shape[0]
 

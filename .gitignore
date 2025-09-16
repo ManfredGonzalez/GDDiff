@@ -14,3 +14,4 @@ model_dlib/
 custom_run.py
 *.pdf
 *.log
+*.svg

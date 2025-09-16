@@ -130,7 +130,7 @@ def create_laplacian_kernel(shape, bbox, variance):
     y, x = np.ogrid[y_start:y_end, x_start:x_end]
 
     # Compute the Laplacian function inside the bbox
-    #Mexican Hat (Laplacian of Gaussian, LoG) function
+    # Mexican Hat (Laplacian of Gaussian, LoG) function
     distance_squared = (x - x_center) ** 2 + (y - y_center) ** 2
     laplacian = (1 - (distance_squared / (2 * variance))) * np.exp(-distance_squared / (2 * variance))
 
