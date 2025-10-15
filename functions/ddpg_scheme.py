@@ -199,6 +199,419 @@ def get_percentile_index(lst, percentile=70):
     idx = min(idx, len(lst) - 1)  # Ensure it's within bounds
     return idx  # Return the index
 
+
+# -------------------------------------------------------
+# Modify ddpg diffusion to accept kernels as a parameters
+# -------------------------------------------------------
+
+def create_dog_kernel(shape, bbox, variance1, variance2):
+    H, W = shape
+    x_center = bbox[0] + bbox[2] // 2
+    y_center = bbox[1] + bbox[3] // 2
+    x_start, x_end = bbox[0], bbox[0] + bbox[2]
+    y_start, y_end = bbox[1], bbox[1] + bbox[3]
+
+    kernel = np.ones((H, W), dtype=np.float32)
+    y, x = np.ogrid[y_start:y_end, x_start:x_end]
+
+    gauss1 = np.exp(-((x - x_center) ** 2 + (y - y_center) ** 2) / (2 * variance1))
+    gauss2 = np.exp(-((x - x_center) ** 2 + (y - y_center) ** 2) / (2 * variance2))
+
+    dog = gauss1 - gauss2
+    dog = (dog - dog.min()) / (dog.max() - dog.min())  # Normalize 0 to 1
+    inverted_dog = 1 - dog
+
+    kernel[y_start:y_end, x_start:x_end] = inverted_dog
+    return kernel
+
+def create_circular_mask_kernel(shape, bbox, radius):
+    H, W = shape
+    x_center = bbox[0] + bbox[2] // 2
+    y_center = bbox[1] + bbox[3] // 2
+    x_start, x_end = bbox[0], bbox[0] + bbox[2]
+    y_start, y_end = bbox[1], bbox[1] + bbox[3]
+
+    kernel = np.ones((H, W), dtype=np.float32)
+    y, x = np.ogrid[y_start:y_end, x_start:x_end]
+
+    mask = (x - x_center) ** 2 + (y - y_center) ** 2 <= radius ** 2
+    kernel[y_start:y_end, x_start:x_end][mask] = 0
+
+    return kernel
+
+def create_linear_gradient_kernel(shape, bbox):
+    H, W = shape
+    x_start, x_end = bbox[0], bbox[0] + bbox[2]
+    y_start, y_end = bbox[1], bbox[1] + bbox[3]
+
+    kernel = np.ones((H, W), dtype=np.float32)
+
+    width = x_end - x_start
+    gradient = np.linspace(0, 1, width, dtype=np.float32)
+    gradient = np.tile(gradient, (y_end - y_start, 1))
+
+    kernel[y_start:y_end, x_start:x_end] = gradient
+    return kernel
+
+def create_sigmoid_kernel(shape, bbox, slope=0.1):
+    H, W = shape
+    x_center = bbox[0] + bbox[2] // 2
+    y_center = bbox[1] + bbox[3] // 2
+    x_start, x_end = bbox[0], bbox[0] + bbox[2]
+    y_start, y_end = bbox[1], bbox[1] + bbox[3]
+
+    kernel = np.ones((H, W), dtype=np.float32)
+    y, x = np.ogrid[y_start:y_end, x_start:x_end]
+
+    dist = np.sqrt((x - x_center) ** 2 + (y - y_center) ** 2)
+    sigmoid = 1 / (1 + np.exp(slope * (dist - bbox[2] / 2)))
+    inverted = 1 - sigmoid
+
+    kernel[y_start:y_end, x_start:x_end] = inverted
+    return kernel
+
+def create_radial_linear_kernel(shape, bbox):
+    H, W = shape
+    x_center = bbox[0] + bbox[2] // 2
+    y_center = bbox[1] + bbox[3] // 2
+    x_start, x_end = bbox[0], bbox[0] + bbox[2]
+    y_start, y_end = bbox[1], bbox[1] + bbox[3]
+
+    max_dist = np.sqrt((bbox[2] / 2) ** 2 + (bbox[3] / 2) ** 2)
+    kernel = np.ones((H, W), dtype=np.float32)
+    y, x = np.ogrid[y_start:y_end, x_start:x_end]
+
+    dist = np.sqrt((x - x_center) ** 2 + (y - y_center) ** 2)
+    radial = dist / max_dist
+    radial = np.clip(radial, 0, 1)
+    inverted = 1 - radial
+
+    kernel[y_start:y_end, x_start:x_end] = inverted
+    return kernel
+
+def create_sinusoidal_kernel(shape, bbox, frequency=0.1):
+    H, W = shape
+    x_start, x_end = bbox[0], bbox[0] + bbox[2]
+    y_start, y_end = bbox[1], bbox[1] + bbox[3]
+
+    kernel = np.ones((H, W), dtype=np.float32)
+    y, x = np.ogrid[y_start:y_end, x_start:x_end]
+
+    sinusoid = 0.5 * (1 + np.sin(frequency * x + frequency * y))
+    inverted = 1 - sinusoid
+
+    kernel[y_start:y_end, x_start:x_end] = inverted
+    return kernel
+
+import numpy as np
+from scipy.ndimage import uniform_filter
+
+def create_blur_kernel(shape, bbox, kernel_size=5):
+    """
+    Creates an average blur kernel applied only inside bbox.
+    Outside bbox is ones.
+    """
+    H, W = shape
+    kernel = np.ones((H, W), dtype=np.float32)
+
+    x_start, x_end = bbox[0], bbox[0] + bbox[2]
+    y_start, y_end = bbox[1], bbox[1] + bbox[3]
+
+    # Create an initial mask with zeros inside bbox (to be blurred)
+    mask = np.zeros((H, W), dtype=np.float32)
+    mask[y_start:y_end, x_start:x_end] = 1
+
+    # Apply uniform filter to mask to simulate blur kernel effect (normalized box filter)
+    blurred_mask = uniform_filter(mask, size=kernel_size)
+
+    # Invert blur effect inside bbox for consistency with your other kernels
+    inverted = 1 - blurred_mask
+
+    kernel[y_start:y_end, x_start:x_end] = inverted[y_start:y_end, x_start:x_end]
+    return kernel
+
+def create_bilateral_kernel(shape, bbox, spatial_variance=10, intensity_variance=0.1, intensity_center=0.5):
+    """
+    Creates a bilateral-like kernel applied only within bbox.
+    Assumes intensity_center is the center intensity value for range kernel.
+    """
+    H, W = shape
+    kernel = np.ones((H, W), dtype=np.float32)
+
+    x_center = bbox[0] + bbox[2] // 2
+    y_center = bbox[1] + bbox[3] // 2
+    x_start, x_end = bbox[0], bbox[0] + bbox[2]
+    y_start, y_end = bbox[1], bbox[1] + bbox[3]
+
+    y, x = np.ogrid[y_start:y_end, x_start:x_end]
+
+    # Spatial Gaussian
+    spatial_dist_sq = (x - x_center) ** 2 + (y - y_center) ** 2
+    spatial_gauss = np.exp(-spatial_dist_sq / (2 * spatial_variance))
+
+    # Intensity Gaussian centered at intensity_center (simulate pixel intensity similarity)
+    intensity_diff_sq = (intensity_center - 0.5) ** 2  # Fixed for demo
+    intensity_gauss = np.exp(-intensity_diff_sq / (2 * intensity_variance))
+
+    bilateral = spatial_gauss * intensity_gauss
+    inverted = 1 - bilateral
+
+    kernel[y_start:y_end, x_start:x_end] = inverted
+    return kernel
+
+def create_salt_and_pepper_kernel(shape, bbox, salt_prob=0.05, pepper_prob=0.05):
+    """
+    Creates a kernel mask simulating salt and pepper noise inside bbox.
+    Outside bbox is ones.
+    """
+    H, W = shape
+    kernel = np.ones((H, W), dtype=np.float32)
+
+    x_start, x_end = bbox[0], bbox[0] + bbox[2]
+    y_start, y_end = bbox[1], bbox[1] + bbox[3]
+
+    noise_area = np.ones((bbox[3], bbox[2]), dtype=np.float32)
+
+    # Generate salt and pepper noise
+    random_vals = np.random.rand(bbox[3], bbox[2])
+    noise_area[random_vals < pepper_prob] = 0.0  # pepper (black pixels)
+    noise_area[random_vals > 1 - salt_prob] = 1.0  # salt (white pixels)
+
+    kernel[y_start:y_end, x_start:x_end] = noise_area
+    return kernel
+
+
+
+
+
+
+
+
+kernels = {
+    'gaussian': create_gaussian_kernel,
+    'laplacian': create_laplacian_kernel,
+}
+
+
+def ddpg_diffusion(x, model, b, A_funcs, y, sigma_y, cls_fn=None, classes=None, config=None, args=None,
+                   deid=False, ckpt_imgs_path=None, face_bbox=None, gaussian_kern=False, diff_priv=False, per=1,
+                   kernels=None):  # <-- added kernels param
+    if ckpt_imgs_path is not None:
+        if os.path.exists(ckpt_imgs_path):
+            shutil.rmtree(ckpt_imgs_path)
+        os.mkdir(ckpt_imgs_path)
+    alphas = []
+    with torch.no_grad():
+
+        # setup iteration variables
+        skip = config.diffusion.num_diffusion_timesteps // config.sampling.T_sampling
+
+        x0_preds = []
+        k_avg = False
+        if isinstance(x, list):
+            x = torch.cat(x, dim=0)
+
+        xs = [x.to('cuda')]
+
+        # generate time schedule
+        times = get_schedule_jump(config.sampling.T_sampling, 1, 1)
+        time_pairs = list(zip(times[:-1], times[1:]))
+        percentile_to_mean = get_percentile_index(time_pairs, percentile=100 * per)
+        if face_bbox:
+            # get the dimensions of the bounding box
+            face_bbox_width, face_bbox_height = face_bbox[2], face_bbox[3]
+            max_variance = face_bbox_width * face_bbox_height
+            min_variance = 0.01 * max_variance
+            # Generate the list of variances corresponding to the number of steps
+            num_steps = len(time_pairs)
+            variances = np.linspace(min_variance, max_variance, num_steps)
+            sampled_variance = np.random.choice(variances)
+
+        # reverse diffusion sampling
+        total_steps = len(time_pairs)
+        mean_step = 0
+        for step_idx, (i, j) in tqdm(enumerate(time_pairs), total=len(time_pairs)):
+            xt = xs[-1].to(x.device)
+            n = xt.size(0)
+            i, j = i * skip, j * skip
+            if j < 0: j = -1
+
+            if j < i:  # normal sampling
+                t = (torch.ones(n) * i).to(x.device)
+                if k_avg:
+                    mean_step += 1
+                    next_t = (torch.ones(n + 1) * j).to(x.device)
+                else:
+                    next_t = (torch.ones(n) * j).to(x.device)
+                at = compute_alpha(b, t.long())
+                alphas.append(at[0].item())
+                at_next = compute_alpha(b, next_t.long())
+
+                if cls_fn is None:
+                    et = model(xt, t)
+                else:
+                    classes = torch.ones(xt.size(0), dtype=torch.long, device=torch.device("cuda")) * class_num
+                    et = model(xt, t, classes)
+                    et = et[:, :3]
+                    et = et - (1 - at).sqrt()[0, 0, 0, 0] * cls_fn(x, t, classes)
+
+                if et.size(1) == 6:
+                    et = et[:, :3]
+
+                # estimate x0
+                x0_t = (xt - et * (1 - at).sqrt()) / at.sqrt()
+                if k_avg:
+                    # Compute the mean along the batch dimension (dim=0)
+                    mean_tensor_x_0 = x0_t.mean(dim=0, keepdim=True)  # Keep the batch dimension
+                    # Concatenate along the batch dimension
+                    x0_t = torch.cat([x0_t, mean_tensor_x_0], dim=0)
+                    n = n + 1
+
+                if ckpt_imgs_path is not None:
+                    path_for_img = os.path.join(ckpt_imgs_path, 'x0_t')
+                    for b_idx in range(x0_t.size(0)):
+                        save_img(i, path_for_img, config, x0_t[b_idx].unsqueeze(0).clone(), b_idx)
+                if sigma_y == 0.:
+                    delta_t = 0
+                    weight_noise_t = 1
+                else:
+                    delta_t = (at_next) ** args.gamma
+                    weight_noise_t = delta_t
+
+                eta_reg = max(1e-4, sigma_y ** 2 * args.eta_tilde)
+                if args.eta_tilde < 0:
+                    eta_reg = 1e-4 + args.xi * (sigma_y * 255.0) ** 2
+
+                scale_gLS = args.scale_ls  # e.g. <= 1/A_funcs.singulars().max()**2
+
+                guidance_BP = A_funcs.A_pinv_add_eta(
+                    A_funcs.A(x0_t.reshape(x0_t.size(0), -1)) - y.reshape(y.size(0), -1), eta_reg
+                ).reshape(*x0_t.size())
+                guidance_LS = A_funcs.At(
+                    A_funcs.A(x0_t.reshape(x0_t.size(0), -1)) - y.reshape(y.size(0), -1)
+                ).reshape(*x0_t.size())
+
+                # Handle kernels if provided
+                if face_bbox is not None and kernels is not None:
+                    kernel_tensors = []
+                    for name, kernel_source in kernels.items():
+                        if callable(kernel_source):
+                            # Determine variance to pass to kernel function
+                            if 'variance' in kernel_source.__code__.co_varnames:
+                                current_variance = variances[step_idx]
+                                kernel_np = kernel_source((x0_t.size(2), x0_t.size(3)), face_bbox, current_variance)
+                            else:
+                                # If variance not in function signature, pass sampled_variance or skip
+                                kernel_np = kernel_source((x0_t.size(2), x0_t.size(3)), face_bbox, sampled_variance)
+                        else:
+                            kernel_np = kernel_source
+
+                        kernel_tensor = torch.tensor(kernel_np, dtype=torch.float32).to(x0_t.device)
+                        if kernel_tensor.dim() == 2:
+                            kernel_tensor = kernel_tensor.unsqueeze(0)  # add channel dim
+                        kernel_tensors.append(kernel_tensor)
+
+                        if ckpt_imgs_path is not None:
+                            path_for_img = os.path.join(ckpt_imgs_path, f'{name}_kernel_heatmap')
+                            if not os.path.exists(path_for_img):
+                                os.mkdir(path_for_img)
+                            save_gaussian_heatmap(kernel_np, os.path.join(path_for_img, f'{i}.png'))
+
+                    batch_kernel_tensor = torch.stack(kernel_tensors, dim=0)  # (num_kernels, 1, H, W)
+
+                    # Combine kernels as average (you can modify this logic)
+                    combined_kernel = batch_kernel_tensor.mean(dim=0)  # (1, H, W)
+                else:
+                    combined_kernel = None
+
+                if ckpt_imgs_path is not None:
+                    path_for_img = os.path.join(ckpt_imgs_path, 'guidance_BP')
+                    if not os.path.exists(path_for_img):
+                        os.mkdir(path_for_img)
+                    for b_idx in range(guidance_BP.size(0)):
+                        save_heatmap(
+                            inverse_data_transform(config, guidance_BP[b_idx].unsqueeze(0).clone()).to('cpu').squeeze().permute(1, 2, 0),
+                            os.path.join(path_for_img, f"{i}_b_{b_idx}.png"),
+                        )
+
+                    # Normalize guidance_LS to have the same range as guidance_BP
+                    min_BP, max_BP = guidance_BP.min(), guidance_BP.max()
+                    min_LS, max_LS = guidance_LS.min(), guidance_LS.max()
+                    guidance_LS_normalized = (guidance_LS - min_LS) / (max_LS - min_LS)
+                    guidance_LS_standardized = guidance_LS_normalized * (max_BP - min_BP) + min_BP
+                    path_for_img = os.path.join(ckpt_imgs_path, 'guidance_LS')
+                    if not os.path.exists(path_for_img):
+                        os.mkdir(path_for_img)
+                    for b_idx in range(guidance_LS_standardized.size(0)):
+                        save_heatmap(
+                            inverse_data_transform(config, guidance_LS_standardized[b_idx].unsqueeze(0).clone()).to('cpu').squeeze().permute(1, 2, 0),
+                            os.path.join(path_for_img, f"{i}_b_{b_idx}.png"),
+                        )
+
+                if k_avg:
+                    at = compute_alpha(b, (torch.ones(n) * i).to(x.device).long()).to(x.device)
+                if args.step_size_mode == 0:
+                    step_size_LS = 1
+                    step_size_BP = 1
+                    step_size = 1
+                elif args.step_size_mode == 1:
+                    step_size_LS = 1
+                    step_size_BP = 1
+                    step_size = (1 - at_next) / (1 - at)
+                elif args.step_size_mode == 2:
+                    step_size_LS = (1 - at_next) / (1 - at)
+                    step_size_BP = 1
+                    step_size = 1
+                else:
+                    assert 1, "unsupported step-size mode"
+
+                if deid and face_bbox is not None and combined_kernel is not None and not diff_priv:
+                    guidance_BP = guidance_BP * combined_kernel
+                    guidance_LS = guidance_LS * combined_kernel
+                    xt_next_tilde = x0_t - step_size * (
+                        step_size_BP * (1 - delta_t) * guidance_BP + step_size_LS * delta_t * scale_gLS * guidance_LS
+                    )
+                elif deid and face_bbox and diff_priv and combined_kernel is None:
+                    epsilon = 1.25
+                    guidance_BP_obfuscated = obfuscate_tensor_region(guidance_BP, epsilon, face_bbox)
+                    guidance_LS_obfuscated = obfuscate_tensor_region(guidance_LS, epsilon, face_bbox)
+                    xt_next_tilde = x0_t - step_size * (
+                        step_size_BP * (1 - delta_t) * guidance_BP_obfuscated + step_size_LS * delta_t * scale_gLS * guidance_LS_obfuscated
+                    )
+                elif deid and face_bbox is not None and combined_kernel is not None and diff_priv:
+                    epsilon = 1.25
+                    guidance_BP_obfuscated = obfuscate_tensor_region(guidance_BP, epsilon, face_bbox) * combined_kernel
+                    guidance_LS_obfuscated = obfuscate_tensor_region(guidance_LS, epsilon, face_bbox) * combined_kernel
+                    xt_next_tilde = x0_t - step_size * (
+                        step_size_BP * (1 - delta_t) * guidance_BP_obfuscated + step_size_LS * delta_t * scale_gLS * guidance_LS_obfuscated
+                    )
+                else:
+                    xt_next_tilde = x0_t - step_size * (
+                        step_size_BP * (1 - delta_t) * guidance_BP + step_size_LS * delta_t * scale_gLS * guidance_LS
+                    )
+
+                xs.append(xt_next_tilde)
+
+        return xs, alphas
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 def ddpg_diffusion(x, model, b, A_funcs, y, sigma_y, cls_fn=None, classes=None, config=None, args=None,
                    deid=False,ckpt_imgs_path=None,face_bbox = None, gaussian_kern=False, diff_priv=False, per = 1):
     if ckpt_imgs_path is not None:
@@ -564,4 +977,5 @@ def _check_times(times, t_0, T_sampling):
     # Value range
     for t in times:
         assert t >= t_0, (t, t_0)
+
         assert t <= T_sampling, (t, T_sampling)
