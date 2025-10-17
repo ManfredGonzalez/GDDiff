@@ -500,11 +500,11 @@ def ddpg_diffusion(x, model, b, A_funcs, y, sigma_y, cls_fn=None, classes=None, 
                     cauchy_kernel_tensor = torch.tensor(cauchy_kernel, dtype=torch.float32).to(x0_t.device)
                     cosine_kernel_tensor = torch.tensor(cosine_kernel, dtype=torch.float32).to(x0_t.device)
                     
-                    epanechnikov_kernel_tensor = epanechnikov_kernel_tensor.unsqueeze(0)  # (1, 256, 256)
-                    triangular_kernel_tensor = triangular_kernel_tensor.unsqueeze(0)  # (1, 256, 256)
-                    exponential_kernel_tensor = exponential_kernel_tensor.unsqueeze(0)  # (1, 256, 256)
-                    cauchy_kernel_tensor = cauchy_kernel_tensor.unsqueeze(0)  # (1, 256, 256)
-                    cosine_kernel_tensor = cosine_kernel_tensor.unsqueeze(0)  # (1, 256, 256)
+                    #epanechnikov_kernel_tensor = epanechnikov_kernel_tensor.unsqueeze(0)  # (1, 256, 256)
+                    #triangular_kernel_tensor = triangular_kernel_tensor.unsqueeze(0)  # (1, 256, 256)
+                    #exponential_kernel_tensor = exponential_kernel_tensor.unsqueeze(0)  # (1, 256, 256)
+                    #cauchy_kernel_tensor = cauchy_kernel_tensor.unsqueeze(0)  # (1, 256, 256)
+                    #cosine_kernel_tensor = cosine_kernel_tensor.unsqueeze(0)  # (1, 256, 256)
                     # ---------------------------------------------
 
 
