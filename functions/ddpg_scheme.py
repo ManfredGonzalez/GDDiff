@@ -144,6 +144,78 @@ def create_laplacian_kernel(shape, bbox, variance):
 
     return kernel
 
+def create_unsharp_masking_kernel(shape, bbox, amount):
+    """
+    Creates an Unsharp Masking kernel centered on the bbox,
+    applied only within the bbox area, and sets the area outside the bbox to ones.
+    Unsharp masking enhances edges by subtracting a blurred version of the image.
+    :param shape: Tuple (H, W) for the image dimensions.
+    :param bbox: Tuple (x, y, w, h) representing the bounding box.
+    :param amount: Weight of the sharpening effect.
+    :return: Unsharp Masking kernel of shape (H, W).
+    """
+    H, W = shape
+    x_start, x_end = bbox[0], bbox[0] + bbox[2]
+    y_start, y_end = bbox[1], bbox[1] + bbox[3]
+
+    # Initialize the kernel with ones
+    kernel = np.ones((H, W), dtype=np.float32)
+
+    # Create a basic unsharp mask kernel (sharpening filter)
+    # Kernel: (1 + amount) * Identity - amount * Gaussian Blur
+    # Using a fixed small Gaussian for simplicity (3x3)
+    blur_kernel = np.array([[1, 2, 1],
+                            [2, 4, 2],
+                            [1, 2, 1]], dtype=np.float32)
+    blur_kernel /= blur_kernel.sum()
+
+    # Unsharp kernel is delta kernel minus scaled blur kernel
+    unsharp_kernel = (1 + amount) * np.eye(3)[1][np.newaxis, :]  # Center pixel
+    unsharp_kernel = np.array([[0, -amount, 0],
+                               [-amount, 1 + 4 * amount, -amount],
+                               [0, -amount, 0]], dtype=np.float32)
+
+    # Apply the unsharp kernel only within the bbox
+    for i in range(y_start + 1, y_end - 1):
+        for j in range(x_start + 1, x_end - 1):
+            kernel[i-1:i+2, j-1:j+2] = unsharp_kernel
+
+    return kernel
+
+
+def create_motion_blur_kernel(shape, bbox, length):
+    """
+    Creates a Motion Blur kernel applied within the bbox area,
+    simulating horizontal motion blur. The area outside the bbox is set to ones.
+    :param shape: Tuple (H, W) for the image dimensions.
+    :param bbox: Tuple (x, y, w, h) representing the bounding box.
+    :param length: Length of the motion blur (must be odd).
+    :return: Motion Blur kernel of shape (H, W).
+    """
+    H, W = shape
+    x_start, x_end = bbox[0], bbox[0] + bbox[2]
+    y_start, y_end = bbox[1], bbox[1] + bbox[3]
+
+    # Initialize the kernel with ones
+    kernel = np.ones((H, W), dtype=np.float32)
+
+    # Create a horizontal motion blur kernel of given length
+    if length % 2 == 0:
+        length += 1  # Ensure odd length
+
+    motion_kernel = np.zeros((1, length), dtype=np.float32)
+    motion_kernel[0] = 1.0 / length
+
+    # Apply the motion blur kernel inside the bbox
+    for i in range(y_start, y_end):
+        for j in range(x_start + length // 2, x_end - length // 2):
+            kernel[i, j - length // 2:j + length // 2 + 1] = motion_kernel
+
+    return kernel
+
+
+
+
 def create_epanechnikov_kernel(shape, bbox, radius):
     H, W = shape
     x_center = bbox[0] + bbox[2] // 2
@@ -488,17 +560,23 @@ def ddpg_diffusion(x, model, b, A_funcs, y, sigma_y, cls_fn=None, classes=None, 
                     # ---------------------------------------------
                     # Create new kernels
                     # ---------------------------------------------
-                    epanechnikov_kernel = create_epanechnikov_kernel((x0_t.size(2), x0_t.size(3)), face_bbox, current_variance)
-                    triangular_kernel = create_triangular_kernel((x0_t.size(2), x0_t.size(3)), face_bbox, current_variance)
-                    exponential_kernel = create_exponential_kernel((x0_t.size(2), x0_t.size(3)), face_bbox, current_variance)
-                    cauchy_kernel = create_cauchy_kernel((x0_t.size(2), x0_t.size(3)), face_bbox, current_variance)
-                    cosine_kernel = create_cosine_kernel((x0_t.size(2), x0_t.size(3)), face_bbox, current_variance)
+                    epanechnikov_kernel = create_epanechnikov_kernel((x0_t.size(2), x0_t.size(3)), face_bbox, 20)
+                    triangular_kernel = create_triangular_kernel((x0_t.size(2), x0_t.size(3)), face_bbox, 25)
+                    exponential_kernel = create_exponential_kernel((x0_t.size(2), x0_t.size(3)), face_bbox, 10)
+                    cauchy_kernel = create_cauchy_kernel((x0_t.size(2), x0_t.size(3)), face_bbox, 15)
+                    cosine_kernel = create_cosine_kernel((x0_t.size(2), x0_t.size(3)), face_bbox, 20)
+                    unsharp_masking_kernel = create_unsharp_masking_kernel((x0_t.size(2), x0_t.size(3)), face_bbox, amount=1.0)
+                    motion_blur_kernel = create_motion_blur_kernel((x0_t.size(2), x0_t.size(3)), face_bbox, length=15)
+                    salt_and_pepper_kernel = create_salt_and_pepper_kernel((x0_t.size(2), x0_t.size(3)), face_bbox, amount=0.5)
 
                     epanechnikov_kernel_tensor = torch.tensor(epanechnikov_kernel, dtype=torch.float32).to(x0_t.device)
                     triangular_kernel_tensor = torch.tensor(triangular_kernel, dtype=torch.float32).to(x0_t.device)
                     exponential_kernel_tensor = torch.tensor(exponential_kernel, dtype=torch.float32).to(x0_t.device)
                     cauchy_kernel_tensor = torch.tensor(cauchy_kernel, dtype=torch.float32).to(x0_t.device)
                     cosine_kernel_tensor = torch.tensor(cosine_kernel, dtype=torch.float32).to(x0_t.device)
+                    unsharp_masking_kernel_tensor = torch.tensor(unsharp_masking_kernel, dtype=torch.float32).to(x0_t.device)
+                    motion_blur_kernel_tensor = torch.tensor(motion_blur_kernel, dtype=torch.float32).to(x0_t.device)
+                    salt_and_pepper_kernel_tensor = torch.tensor(salt_and_pepper_kernel, dtype=torch.float32).to(x0_t.device)
                     
                     #epanechnikov_kernel_tensor = epanechnikov_kernel_tensor.unsqueeze(0)  # (1, 256, 256)
                     #triangular_kernel_tensor = triangular_kernel_tensor.unsqueeze(0)  # (1, 256, 256)
@@ -535,16 +613,23 @@ def ddpg_diffusion(x, model, b, A_funcs, y, sigma_y, cls_fn=None, classes=None, 
                         exponential_kernel_tensor = exponential_kernel_tensor.unsqueeze(0)  # (1, 256, 256)
                         cauchy_kernel_tensor = cauchy_kernel_tensor.unsqueeze(0)  # (1, 256, 256)
                         cosine_kernel_tensor = cosine_kernel_tensor.unsqueeze(0)  # (1, 256, 256)
-                        
+                        unsharp_masking_kernel_tensor = unsharp_masking_kernel_tensor.unsqueeze(0)  # (1, 256, 256)
+                        motion_blur_kernel_tensor = motion_blur_kernel_tensor.unsqueeze(0)  # (1, 256, 256)
+                        salt_and_pepper_kernel_tensor = salt_and_pepper_kernel_tensor.unsqueeze(0)  # (1, 256, 256)
+
                         # Stack along the batch dimension (B=3)
                         batch_kernel_tensor = torch.stack([
-                            #gaussian_kernel_tensor, 
-                            #laplacian_kernel_tensor, 
-                            epanechnikov_kernel_tensor,
-                            triangular_kernel_tensor,
+                            gaussian_kernel_tensor, 
+                            laplacian_kernel_tensor, 
+                            #epanechnikov_kernel_tensor,
+                            #triangular_kernel_tensor,
                             #exponential_kernel_tensor,
                             #cauchy_kernel_tensor,
                             #cosine_kernel_tensor,
+                            #unsharp_masking_kernel_tensor,
+                            #motion_blur_kernel_tensor,
+                            #salt_and_pepper_kernel_tensor,
+
                             zerokernel_tensor,
                         ], dim=0)  # Shape: (3, 1, 256, 256)
 
