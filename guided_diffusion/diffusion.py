@@ -428,7 +428,7 @@ class Diffusion(object):
         deid = True
         k = 2
         if deid:
-            face_detector = cv2.CascadeClassifier('haarcascade_frontalface_default.xml')
+            face_detector = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
         else:
             face_detector = None
         detections = []
@@ -596,3 +596,4 @@ class Diffusion(object):
                         
 
             idx_so_far += y.shape[0]
+
