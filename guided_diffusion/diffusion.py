@@ -573,9 +573,15 @@ class Diffusion(object):
                             x[0][j], os.path.join(self.args.image_folder, f"{idx_so_far + j}_{0}.png")
                         )
                     else:
-                        method = "gauss"
+                        #method = "gauss"
+                        #if j == 1:
+                        #    method = "Lapl"
+                        #elif j == 2:
+                        #    method = "mean"
+
+                        method = "epanechnikov"
                         if j == 1:
-                            method = "Lapl"
+                            method = "triangular"
                         elif j == 2:
                             method = "mean"
 
@@ -590,5 +596,3 @@ class Diffusion(object):
                         
 
             idx_so_far += y.shape[0]
-
-
