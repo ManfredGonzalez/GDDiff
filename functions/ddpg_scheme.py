@@ -110,6 +110,138 @@ def create_gaussian_kernel(shape, bbox, variance):
 
     return kernel
 
+def create_binary_gaussian_kernel(shape, bbox, variance, threshold=0.5):
+    """
+    Creates a binary Gaussian kernel: values >= threshold are 1, others 0.
+    """
+    H, W = shape
+    x_center = bbox[0] + bbox[2] // 2
+    y_center = bbox[1] + bbox[3] // 2
+    x_start, x_end = bbox[0], bbox[0] + bbox[2]
+    y_start, y_end = bbox[1], bbox[1] + bbox[3]
+
+    kernel = np.ones((H, W), dtype=np.float32)
+    y, x = np.ogrid[y_start:y_end, x_start:x_end]
+    gaussian = np.exp(-((x - x_center) ** 2 + (y - y_center) ** 2) / (2 * variance))
+    binary = (gaussian >= threshold).astype(np.float32)
+
+    kernel[y_start:y_end, x_start:x_end] = binary
+    return kernel
+
+def create_log_gaussian_kernel(shape, bbox, variance):
+    """
+    Creates a log-Gaussian kernel: log of Gaussian values normalized to [0, 1].
+    """
+    H, W = shape
+    x_center = bbox[0] + bbox[2] // 2
+    y_center = bbox[1] + bbox[3] // 2
+    x_start, x_end = bbox[0], bbox[0] + bbox[2]
+    y_start, y_end = bbox[1], bbox[1] + bbox[3]
+
+    kernel = np.ones((H, W), dtype=np.float32)
+    y, x = np.ogrid[y_start:y_end, x_start:x_end]
+    gaussian = np.exp(-((x - x_center) ** 2 + (y - y_center) ** 2) / (2 * variance))
+    log_gaussian = np.log(gaussian + 1e-6)  # Avoid log(0)
+    normalized = (log_gaussian - log_gaussian.min()) / (log_gaussian.max() - log_gaussian.min())
+
+    kernel[y_start:y_end, x_start:x_end] = normalized
+    return kernel
+
+
+def create_flat_top_gaussian_kernel(shape, bbox, variance, clip_value=0.8):
+    """
+    Creates a Gaussian kernel with a flat top (values clipped to a max).
+    """
+    H, W = shape
+    x_center = bbox[0] + bbox[2] // 2
+    y_center = bbox[1] + bbox[3] // 2
+    x_start, x_end = bbox[0], bbox[0] + bbox[2]
+    y_start, y_end = bbox[1], bbox[1] + bbox[3]
+
+    kernel = np.ones((H, W), dtype=np.float32)
+    y, x = np.ogrid[y_start:y_end, x_start:x_end]
+    gaussian = np.exp(-((x - x_center) ** 2 + (y - y_center) ** 2) / (2 * variance))
+    flat_top = np.clip(gaussian, clip_value, 1.0)
+
+    kernel[y_start:y_end, x_start:x_end] = flat_top
+    return kernel
+
+
+def create_double_gaussian_kernel(shape, bbox, variance1, variance2, weight=0.5):
+    """
+    Combines two Gaussians: wide and narrow. Useful for emphasizing central peak with context.
+    """
+    H, W = shape
+    x_center = bbox[0] + bbox[2] // 2
+    y_center = bbox[1] + bbox[3] // 2
+    x_start, x_end = bbox[0], bbox[0] + bbox[2]
+    y_start, y_end = bbox[1], bbox[1] + bbox[3]
+
+    kernel = np.ones((H, W), dtype=np.float32)
+    y, x = np.ogrid[y_start:y_end, x_start:x_end]
+    gaussian1 = np.exp(-((x - x_center) ** 2 + (y - y_center) ** 2) / (2 * variance1))
+    gaussian2 = np.exp(-((x - x_center) ** 2 + (y - y_center) ** 2) / (2 * variance2))
+    combined = weight * gaussian1 + (1 - weight) * gaussian2
+
+    kernel[y_start:y_end, x_start:x_end] = combined
+    return kernel
+
+
+def create_gabor_kernel(shape, bbox, variance, frequency=0.2, theta=0):
+    """
+    Creates a Gabor kernel in the bbox area, ones outside.
+    """
+    import numpy as np
+
+    H, W = shape
+    x_center = bbox[0] + bbox[2] // 2
+    y_center = bbox[1] + bbox[3] // 2
+    x_start, x_end = bbox[0], bbox[0] + bbox[2]
+    y_start, y_end = bbox[1], bbox[1] + bbox[3]
+
+    kernel = np.ones((H, W), dtype=np.float32)
+    y, x = np.ogrid[y_start:y_end, x_start:x_end]
+
+    x_shifted = x - x_center
+    y_shifted = y - y_center
+
+    # Rotate the coordinates
+    x_theta = x_shifted * np.cos(theta) + y_shifted * np.sin(theta)
+    y_theta = -x_shifted * np.sin(theta) + y_shifted * np.cos(theta)
+
+    gaussian = np.exp(-(x_theta**2 + y_theta**2) / (2 * variance))
+    sinusoid = np.cos(2 * np.pi * frequency * x_theta)
+
+    gabor = gaussian * sinusoid
+    kernel[y_start:y_end, x_start:x_end] = gabor
+
+    return kernel
+
+
+def create_gaussian_polynomial_kernel(shape, bbox, variance, a=1.0, degree=2):
+    """
+    Gaussian * polynomial kernel applied in bbox, ones elsewhere.
+    """
+    H, W = shape
+    x_center = bbox[0] + bbox[2] // 2
+    y_center = bbox[1] + bbox[3] // 2
+    x_start, x_end = bbox[0], bbox[0] + bbox[2]
+    y_start, y_end = bbox[1], bbox[1] + bbox[3]
+
+    kernel = np.ones((H, W), dtype=np.float32)
+    y, x = np.ogrid[y_start:y_end, x_start:x_end]
+
+    dist_sq = (x - x_center) ** 2 + (y - y_center) ** 2
+    gaussian = np.exp(-dist_sq / (2 * variance))
+    polynomial = (a * dist_sq + 1) ** degree
+
+    combined = gaussian * polynomial
+    kernel[y_start:y_end, x_start:x_end] = combined
+
+    return kernel
+
+
+
 def create_laplacian_kernel(shape, bbox, variance):
     """
     Creates a Laplacian kernel centered on the bbox center,
@@ -313,6 +445,44 @@ def create_blur_kernel(shape, bbox):
     blur_value = 0.5  # You can adjust this
     kernel[y_start:y_end, x_start:x_end] = blur_value
     return kernel
+
+def create_fog_kernel(shape, bbox, scale=20.0):
+    """
+    Creates a fog-like kernel: smooth, gradual increase from the center of the bbox
+    to the edges, simulating fog density.
+    
+    Parameters:
+        shape : tuple
+            (H, W) size of the kernel/image.
+        bbox : list or tuple
+            Bounding box [x, y, w, h].
+        scale : float
+            Controls how fast the fog density decays from the center. Larger = slower decay.
+            
+    Returns:
+        kernel : np.ndarray
+            2D kernel of shape (H, W) with fog pattern applied inside bbox.
+    """
+    H, W = shape
+    x_center = bbox[0] + bbox[2] // 2
+    y_center = bbox[1] + bbox[3] // 2
+    x_start, x_end = bbox[0], bbox[0] + bbox[2]
+    y_start, y_end = bbox[1], bbox[1] + bbox[3]
+
+    # Initialize full kernel to 1 (no fog)
+    kernel = np.ones((H, W), dtype=np.float32)
+
+    # Coordinate grid within bbox
+    y, x = np.ogrid[y_start:y_end, x_start:x_end]
+    distance = np.sqrt((x - x_center) ** 2 + (y - y_center) ** 2)
+
+    # Fog effect: smooth exponential decay from center
+    fog = 1 - np.exp(-distance / scale)
+
+    # Insert fog into kernel
+    kernel[y_start:y_end, x_start:x_end] = fog
+    return kernel
+
 
 def create_salt_and_pepper_kernel(shape, bbox, amount=0.05):
     """
@@ -567,7 +737,14 @@ def ddpg_diffusion(x, model, b, A_funcs, y, sigma_y, cls_fn=None, classes=None, 
                     cosine_kernel = create_cosine_kernel((x0_t.size(2), x0_t.size(3)), face_bbox, 20)
                     unsharp_masking_kernel = create_unsharp_masking_kernel((x0_t.size(2), x0_t.size(3)), face_bbox, amount=1.0)
                     motion_blur_kernel = create_motion_blur_kernel((x0_t.size(2), x0_t.size(3)), face_bbox, length=15)
-                    salt_and_pepper_kernel = create_salt_and_pepper_kernel((x0_t.size(2), x0_t.size(3)), face_bbox, amount=0.5)
+                    salt_and_pepper_kernel = create_salt_and_pepper_kernel((x0_t.size(2), x0_t.size(3)), face_bbox, amount=0.9)
+                    fog_kernel = create_fog_kernel((x0_t.size(2), x0_t.size(3)), face_bbox, scale=50)
+
+                    polynomial_kernel = create_gaussian_polynomial_kernel((x0_t.size(2), x0_t.size(3)), face_bbox, current_variance)
+                    gabor_kernel = create_gabor_kernel((x0_t.size(2), x0_t.size(3)), face_bbox, current_variance)
+                    double_gaussian_kernel = create_double_gaussian_kernel((x0_t.size(2), x0_t.size(3)), face_bbox, current_variance, current_variance/2)
+                    log_gaussian_kernel = create_log_gaussian_kernel((x0_t.size(2), x0_t.size(3)), face_bbox, current_variance)
+
 
                     epanechnikov_kernel_tensor = torch.tensor(epanechnikov_kernel, dtype=torch.float32).to(x0_t.device)
                     triangular_kernel_tensor = torch.tensor(triangular_kernel, dtype=torch.float32).to(x0_t.device)
@@ -577,7 +754,13 @@ def ddpg_diffusion(x, model, b, A_funcs, y, sigma_y, cls_fn=None, classes=None, 
                     unsharp_masking_kernel_tensor = torch.tensor(unsharp_masking_kernel, dtype=torch.float32).to(x0_t.device)
                     motion_blur_kernel_tensor = torch.tensor(motion_blur_kernel, dtype=torch.float32).to(x0_t.device)
                     salt_and_pepper_kernel_tensor = torch.tensor(salt_and_pepper_kernel, dtype=torch.float32).to(x0_t.device)
-                    
+                    fog_kernel_tensor = torch.tensor(fog_kernel, dtype=torch.float32).to(x0_t.device)
+
+                    polynomial_kernel_tensor = torch.tensor(polynomial_kernel, dtype=torch.float32).to(x0_t.device)
+                    gabor_kernel_tensor = torch.tensor(gabor_kernel, dtype=torch.float32).to(x0_t.device)
+                    double_gaussian_kernel_tensor = torch.tensor(double_gaussian_kernel, dtype=torch.float32).to(x0_t.device)
+                    log_gaussian_kernel_tensor = torch.tensor(log_gaussian_kernel, dtype=torch.float32).to(x0_t.device)
+
                     #epanechnikov_kernel_tensor = epanechnikov_kernel_tensor.unsqueeze(0)  # (1, 256, 256)
                     #triangular_kernel_tensor = triangular_kernel_tensor.unsqueeze(0)  # (1, 256, 256)
                     #exponential_kernel_tensor = exponential_kernel_tensor.unsqueeze(0)  # (1, 256, 256)
@@ -604,10 +787,11 @@ def ddpg_diffusion(x, model, b, A_funcs, y, sigma_y, cls_fn=None, classes=None, 
                     #    ], dim=0)  # Shape: (3, 1, 256, 256)
 
                     if n==3:
+                        #print("Number channels n=3 -----------------------------------------------")
                         # Ensure each kernel has shape (1, 256, 256) by adding a channel dimension
                         gaussian_kernel_tensor = gaussian_kernel_tensor.unsqueeze(0)  # (1, 256, 256)
                         laplacian_kernel_tensor = laplacian_kernel_tensor.unsqueeze(0)  # (1, 256, 256)
-                        zerokernel_tensor = zerokernel_tensor.unsqueeze(0)
+                        zerokernel_tensor = zerokernel_tensor.unsqueeze(0) 
                         epanechnikov_kernel_tensor = epanechnikov_kernel_tensor.unsqueeze(0)  # (1, 256, 256)
                         triangular_kernel_tensor = triangular_kernel_tensor.unsqueeze(0)  # (1, 256, 256)
                         exponential_kernel_tensor = exponential_kernel_tensor.unsqueeze(0)  # (1, 256, 256)
@@ -616,11 +800,17 @@ def ddpg_diffusion(x, model, b, A_funcs, y, sigma_y, cls_fn=None, classes=None, 
                         unsharp_masking_kernel_tensor = unsharp_masking_kernel_tensor.unsqueeze(0)  # (1, 256, 256)
                         motion_blur_kernel_tensor = motion_blur_kernel_tensor.unsqueeze(0)  # (1, 256, 256)
                         salt_and_pepper_kernel_tensor = salt_and_pepper_kernel_tensor.unsqueeze(0)  # (1, 256, 256)
+                        fog_kernel_tensor = fog_kernel_tensor.unsqueeze(0) 
+                        
+                        polynomial_kernel_tensor = polynomial_kernel_tensor.unsqueeze(0)
+                        gabor_kernel_tensor = gabor_kernel_tensor.unsqueeze(0)
+                        double_gaussian_kernel_tensor = double_gaussian_kernel_tensor.unsqueeze(0)
+                        log_gaussian_kernel_tensor = log_gaussian_kernel_tensor.unsqueeze(0)
 
                         # Stack along the batch dimension (B=3)
                         batch_kernel_tensor = torch.stack([
                             gaussian_kernel_tensor, 
-                            laplacian_kernel_tensor, 
+                            #laplacian_kernel_tensor, 
                             #epanechnikov_kernel_tensor,
                             #triangular_kernel_tensor,
                             #exponential_kernel_tensor,
@@ -628,7 +818,12 @@ def ddpg_diffusion(x, model, b, A_funcs, y, sigma_y, cls_fn=None, classes=None, 
                             #cosine_kernel_tensor,
                             #unsharp_masking_kernel_tensor,
                             #motion_blur_kernel_tensor,
-                            #salt_and_pepper_kernel_tensor,
+                            salt_and_pepper_kernel_tensor,
+                            #fog_kernel_tensor,
+                            #polynomial_kernel_tensor,
+                            #gabor_kernel_tensor,
+                            #double_gaussian_kernel_tensor,
+                            #log_gaussian_kernel_tensor,
 
                             zerokernel_tensor,
                         ], dim=0)  # Shape: (3, 1, 256, 256)
@@ -637,15 +832,48 @@ def ddpg_diffusion(x, model, b, A_funcs, y, sigma_y, cls_fn=None, classes=None, 
 
 
                     elif n==2 and not k_avg:
+                        #print("Number channels n=2 -----------------------------------------------")
                         # Ensure each kernel has shape (1, 256, 256) by adding a channel dimension
                         gaussian_kernel_tensor = gaussian_kernel_tensor.unsqueeze(0)  # (1, 256, 256)
                         laplacian_kernel_tensor = laplacian_kernel_tensor.unsqueeze(0)  # (1, 256, 256)
+
+                        epanechnikov_kernel_tensor = epanechnikov_kernel_tensor.unsqueeze(0)  # (1, 256, 256)
+                        triangular_kernel_tensor = triangular_kernel_tensor.unsqueeze(0)  # (1, 256, 256)
+                        exponential_kernel_tensor = exponential_kernel_tensor.unsqueeze(0)  # (1, 256, 256)
+                        cauchy_kernel_tensor = cauchy_kernel_tensor.unsqueeze(0)  # (1, 256, 256)
+                        cosine_kernel_tensor = cosine_kernel_tensor.unsqueeze(0)  # (1, 256, 256)
+                        unsharp_masking_kernel_tensor = unsharp_masking_kernel_tensor.unsqueeze(0)  # (1, 256, 256)
+                        motion_blur_kernel_tensor = motion_blur_kernel_tensor.unsqueeze(0)  # (1, 256, 256)
+                        salt_and_pepper_kernel_tensor = salt_and_pepper_kernel_tensor.unsqueeze(0)  # (1, 256, 256)
+                        fog_kernel_tensor = fog_kernel_tensor.unsqueeze(0) 
+
+                        polynomial_kernel_tensor = polynomial_kernel_tensor.unsqueeze(0)
+                        gabor_kernel_tensor = gabor_kernel_tensor.unsqueeze(0)
+                        double_gaussian_kernel_tensor = double_gaussian_kernel_tensor.unsqueeze(0)
+                        log_gaussian_kernel_tensor = log_gaussian_kernel_tensor.unsqueeze(0)
+
                         # Stack along the batch dimension (B=3)
                         batch_kernel_tensor = torch.stack([
                             gaussian_kernel_tensor, 
-                            laplacian_kernel_tensor
+                            #laplacian_kernel_tensor,
+                            #laplacian_kernel_tensor, 
+                            #epanechnikov_kernel_tensor,
+                            #triangular_kernel_tensor,
+                            #exponential_kernel_tensor,
+                            #cauchy_kernel_tensor,
+                            #cosine_kernel_tensor,
+                            #unsharp_masking_kernel_tensor,
+                            #motion_blur_kernel_tensor,
+                            salt_and_pepper_kernel_tensor,
+                            #fog_kernel_tensor
+                            #polynomial_kernel_tensor,
+                            #gabor_kernel_tensor,
+                            #double_gaussian_kernel_tensor,
+                            #log_gaussian_kernel_tensor,
+
                         ], dim=0)  # Shape: (3, 1, 256, 256)
                     else:
+                        print("Else --------------------------------------")
                         batch_kernel_tensor = gaussian_kernel_tensor
                 
                 
