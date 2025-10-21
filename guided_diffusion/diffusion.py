@@ -579,11 +579,21 @@ class Diffusion(object):
                         #elif j == 2:
                         #    method = "mean"
 
-                        method = "epanechnikov"
+                    else:
+                        #method = "gauss"
+                        #if j == 1:
+                        #    method = "Lapl"
+                        #elif j == 2:
+                        #    method = "mean"
+
+                        method = "gauss" #"epanechnikov"
                         if j == 1:
-                            method = "triangular"
+                            method = "salt_and_pepper" #"triangular"
                         elif j == 2:
-                            method = "mean"
+                            method = "mean_salt_and_pepper_gauss"
+
+                        
+                        
 
                         
                         
@@ -596,4 +606,5 @@ class Diffusion(object):
                         
 
             idx_so_far += y.shape[0]
+
 
