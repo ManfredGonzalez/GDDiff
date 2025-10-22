@@ -80,6 +80,30 @@ def obfuscate_tensor_region(tensor, epsilon, bbox):
     tensor[:, :, y:y+h, x:x+w] = obfuscated_roi
     return tensor
 
+def create_gaussian_noise_kernel(shape, bbox, variance):
+    """
+    Creates a Gaussian noise kernel with the specified variance within the bbox,
+    and sets the area outside the bbox to ones.
+    :param shape: Tuple (H, W) for the image dimensions.
+    :param bbox: Tuple (x, y, w, h) representing the bounding box.
+    :param variance: Variance of the Gaussian noise.
+    :return: Noise kernel of shape (H, W).
+    """
+    H, W = shape
+    x_start, x_end = bbox[0], bbox[0] + bbox[2]
+    y_start, y_end = bbox[1], bbox[1] + bbox[3]
+
+    # Initialize the kernel with ones
+    kernel = np.ones((H, W), dtype=np.float32)
+
+    # Generate Gaussian noise within the bounding box
+    noise = np.random.normal(loc=0.0, scale=np.sqrt(variance), size=(y_end - y_start, x_end - x_start))
+
+    # Place the noise in the bounding box area of the kernel
+    kernel[y_start:y_end, x_start:x_end] = noise
+
+    return kernel
+    
 def create_gaussian_kernel(shape, bbox, variance):
     """
     Creates a Gaussian kernel with the specified shape and variance centered on the bbox center,
@@ -1060,3 +1084,4 @@ def _check_times(times, t_0, T_sampling):
     for t in times:
         assert t >= t_0, (t, t_0)
         assert t <= T_sampling, (t, T_sampling)
+
