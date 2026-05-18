@@ -1,25 +1,7 @@
-# Image Restoration by Denoising Diffusion Models with Iteratively Preconditioned Guidance
+# 
 
-## 📖[**Paper**](https://arxiv.org/pdf/2312.16519.pdf) (CVPR 2024)
-
-Tomer Garber, [Tom Tirer](https://scholar.google.com/citations?user=_6bZV20AAAAJ)
-
-The Open University of Israel and Bar-Ilan University
 
 # Introduction
-
-This repository contains the code release for *Image Restoration by Denoising Diffusion Models with Iteratively
-Preconditioned Guidance* (***DDPG***).
-
-Main idea: identifying [back-projection](https://arxiv.org/abs/1710.06647) (BP) guidance (used recently under the names "pseudoinverse" or "range/null-space" guidance) as a preconditioned version of least squares (LS) guidance, and accordingly, devising a guidance technique with iteration-dependent preconditioning that traverses from BP to LS, enjoying the benefits of both.
-
-## Supported degradations
-
-1. Super-Resolution (Bicubic)
-2. Gaussian Deblurring
-3. Motion Deblurring
-
-The code can be very easily adapted to super-resolution and deblurring with any kernel.  
 Extension to other linear measurement models is also possible.
 
 # Setup
