@@ -1,5 +1,7 @@
 # Ignore node_modules directory
 exp/datasets/
+papers_of_interest/
+exp/image_samples
 */__pycache__/
 *.png
 *.csv
@@ -15,3 +17,5 @@ custom_run.py
 *.pdf
 *.log
 *.svg
+evaluation*.sh
+.vscode/

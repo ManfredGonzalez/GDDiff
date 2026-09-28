@@ -25,7 +25,8 @@ def save_heatmap(image, path):
     plt.axis('off')
     plt.savefig(path, bbox_inches='tight', pad_inches=0)
     plt.close()
-
+def save_npy(array, path):
+    np.save(path, array)
 def compute_alpha(beta, t):
     beta = torch.cat([torch.zeros(1).to(beta.device), beta], dim=0)
     a = (1 - beta).cumprod(dim=0).index_select(0, t + 1).view(-1, 1, 1, 1)
@@ -204,7 +205,9 @@ def ddpg_diffusion(x, model, b, A_funcs, y, sigma_y, cls_fn=None, classes=None, 
     if ckpt_imgs_path is not None:
         if os.path.exists(ckpt_imgs_path):
             shutil.rmtree(ckpt_imgs_path)
-        os.mkdir(ckpt_imgs_path)
+        os.makedirs(ckpt_imgs_path)
+        time_step_to_save = [900] # leave this to none if you want to save all steps
+    
     alphas = []
     with torch.no_grad():
 
@@ -279,7 +282,7 @@ def ddpg_diffusion(x, model, b, A_funcs, y, sigma_y, cls_fn=None, classes=None, 
                 This matches the equation, where et is the predicted noise
                 '''
                     
-                if ckpt_imgs_path is not None:
+                if ckpt_imgs_path is not None and i in time_step_to_save:
                     path_for_img = os.path.join(ckpt_imgs_path,'x0_t')
                     for b_idx in range(x0_t.size(0)):
                         save_img(i,path_for_img,config,x0_t[b_idx].unsqueeze(0).clone(),b_idx)
@@ -322,14 +325,14 @@ def ddpg_diffusion(x, model, b, A_funcs, y, sigma_y, cls_fn=None, classes=None, 
                     current_variance = variances[step_idx]
                     # Create the Gaussian kernel based on the bounding box and the calculated variance
                     gaussian_kernel = create_gaussian_kernel((x0_t.size(2), x0_t.size(3)), face_bbox, current_variance)
-                    if ckpt_imgs_path is not None:
+                    if ckpt_imgs_path is not None and i in time_step_to_save:
                         path_for_img = os.path.join(ckpt_imgs_path,'gaussian_kernel_heatmap')
                         if not os.path.exists(path_for_img):
                             os.mkdir(path_for_img)
                         # Save the Gaussian kernel as a heatmap image
                         save_gaussian_heatmap(gaussian_kernel, os.path.join(path_for_img,f'{i}.png'))
                     laplacian_kernel = create_laplacian_kernel((x0_t.size(2), x0_t.size(3)), face_bbox, current_variance)
-                    if ckpt_imgs_path is not None:
+                    if ckpt_imgs_path is not None and i in time_step_to_save:
                         path_for_img = os.path.join(ckpt_imgs_path,'laplacian_kernel_heatmap')
                         if not os.path.exists(path_for_img):
                             os.mkdir(path_for_img)
@@ -338,7 +341,7 @@ def ddpg_diffusion(x, model, b, A_funcs, y, sigma_y, cls_fn=None, classes=None, 
                     
                     #zerokernel = create_zero_kernel((x0_t.size(2), x0_t.size(3)), face_bbox)
                     gaussian_kernel_fixed = create_gaussian_kernel((x0_t.size(2), x0_t.size(3)), face_bbox, sampled_variance)
-                    if ckpt_imgs_path is not None and n==3:
+                    if ckpt_imgs_path is not None and n==3 and i in time_step_to_save:
                         path_for_img = os.path.join(ckpt_imgs_path,f'gaussian_kernel_fixed_{str(sampled_variance)}_heatmap')
                         if not os.path.exists(path_for_img):
                             os.mkdir(path_for_img)
@@ -346,7 +349,7 @@ def ddpg_diffusion(x, model, b, A_funcs, y, sigma_y, cls_fn=None, classes=None, 
                         save_gaussian_heatmap(gaussian_kernel_fixed, os.path.join(path_for_img,f'{i}.png'))
                     gaussian_kernel_fixed_tensor = torch.tensor(gaussian_kernel_fixed, dtype=torch.float32).to(x0_t.device)
                     zerokernel = create_zero_kernel((x0_t.size(2), x0_t.size(3)), face_bbox)#np.ones((x0_t.size(2), x0_t.size(3)), dtype=np.float32)
-                    if ckpt_imgs_path is not None:
+                    if ckpt_imgs_path is not None and i in time_step_to_save:
                         path_for_img = os.path.join(ckpt_imgs_path,f'zerokernel_fixed_heatmap')
                         if not os.path.exists(path_for_img):
                             os.mkdir(path_for_img)
@@ -382,7 +385,7 @@ def ddpg_diffusion(x, model, b, A_funcs, y, sigma_y, cls_fn=None, classes=None, 
                         batch_kernel_tensor = gaussian_kernel_tensor
                 
                 
-                if ckpt_imgs_path is not None:
+                if ckpt_imgs_path is not None and i in time_step_to_save:
                     path_for_img = os.path.join(ckpt_imgs_path,'guidance_BP')
                     if not os.path.exists(path_for_img):
                         os.mkdir(path_for_img)
@@ -423,6 +426,20 @@ def ddpg_diffusion(x, model, b, A_funcs, y, sigma_y, cls_fn=None, classes=None, 
                 if deid and face_bbox is not None and gaussian_kern and not diff_priv:
                     guidance_BP = guidance_BP*batch_kernel_tensor
                     guidance_LS = guidance_LS*batch_kernel_tensor
+                    if ckpt_imgs_path is not None and i in time_step_to_save:
+                        path_for_img = os.path.join(ckpt_imgs_path,'masked_guidance_BP')
+                        if not os.path.exists(path_for_img):
+                            os.mkdir(path_for_img)
+                        for b_idx in  range(guidance_BP.size(0)):
+                            # save numPy heatmap
+                            save_npy(inverse_data_transform(config, guidance_BP[b_idx].unsqueeze(0).clone()).to('cpu').squeeze().permute(1, 2, 0), 
+                                        os.path.join(path_for_img,f"{i}_b_{b_idx}.npy"))
+                        path_for_img = os.path.join(ckpt_imgs_path,'masked_guidance_LS')
+                        if not os.path.exists(path_for_img):
+                            os.mkdir(path_for_img)
+                        for b_idx in  range(guidance_LS.size(0)):
+                            save_npy(inverse_data_transform(config, guidance_LS[b_idx].unsqueeze(0).clone()).to('cpu').squeeze().permute(1, 2, 0), 
+                                        os.path.join(path_for_img,f"{i}_b_{b_idx}.npy"))
                     # data fidelity guidance
                     xt_next_tilde = x0_t - step_size * ( step_size_BP * (1-delta_t) * guidance_BP + step_size_LS * delta_t * scale_gLS * guidance_LS )
                 elif deid and face_bbox and diff_priv and not gaussian_kern:
@@ -454,7 +471,7 @@ def ddpg_diffusion(x, model, b, A_funcs, y, sigma_y, cls_fn=None, classes=None, 
                     This combines the BP and LS terms according to the weighting delta_t and 
                     scaling factors for the guidance terms.
                 '''
-                if ckpt_imgs_path is not None:
+                if ckpt_imgs_path is not None and i in time_step_to_save:
                     path_for_img = os.path.join(ckpt_imgs_path,'xt_next_tilde')
                     for b_idx in  range(xt_next_tilde.size(0)):
                         save_img(i,path_for_img,config,xt_next_tilde[b_idx].unsqueeze(0).clone(),b_idx)
@@ -495,12 +512,12 @@ def ddpg_diffusion(x, model, b, A_funcs, y, sigma_y, cls_fn=None, classes=None, 
                         intermediate state (xt_next_tilde). It represents the next 
                         iteration’s state (xt-1).
                 '''
-                if ckpt_imgs_path is not None:
+                if ckpt_imgs_path is not None and i in time_step_to_save:
                     path_for_img = os.path.join(ckpt_imgs_path,'xt_next')
                     for b_idx in  range(xt_next.size(0)):
                         save_img(i,path_for_img,config,xt_next[b_idx].unsqueeze(0).clone(),b_idx)
 
-                if ckpt_imgs_path is not None and k_avg:
+                if ckpt_imgs_path is not None and k_avg and i in time_step_to_save:
                     path_for_img = os.path.join(ckpt_imgs_path,'xt_next_mean')
                     for b_idx in  range(xt_next_mean.size(0)):
                         save_img(i,path_for_img,config,xt_next_mean[b_idx].unsqueeze(0).clone(),b_idx)
@@ -518,7 +535,7 @@ def ddpg_diffusion(x, model, b, A_funcs, y, sigma_y, cls_fn=None, classes=None, 
         
         if sigma_y != 0.:  # if there is noise, take the denoised result
             xs.append(x0_t.to('cpu'))
-    if ckpt_imgs_path is not None:
+    if ckpt_imgs_path is not None and i in time_step_to_save:
         plot_alphas(alphas,os.path.join(ckpt_imgs_path,'alphas_plot.pdf'))
 
     return [xs[-1]], [x0_preds[-1]]

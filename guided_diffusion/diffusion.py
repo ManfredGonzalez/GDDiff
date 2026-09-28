@@ -182,6 +182,11 @@ class Diffusion(object):
             model.load_state_dict(torch.load(ckpt, map_location=self.device))
             model.to(self.device)
             model = torch.nn.DataParallel(model)
+            # Print model parameter counts (total and trainable).
+            base_model = model.module if hasattr(model, 'module') else model
+            total_params = sum(p.numel() for p in base_model.parameters())
+            trainable_params = sum(p.numel() for p in base_model.parameters() if p.requires_grad)
+            print(f"Model parameters: total={total_params} ({total_params/1e6:.2f}M), trainable={trainable_params} ({trainable_params/1e6:.2f}M)")
 
         elif self.config.model.type == 'openai':
             config_dict = vars(self.config.model)
@@ -212,6 +217,12 @@ class Diffusion(object):
             model.to(self.device)
             model.eval()
             model = torch.nn.DataParallel(model)
+
+            # Print model parameter counts (total and trainable).
+            base_model = model.module if hasattr(model, 'module') else model
+            total_params = sum(p.numel() for p in base_model.parameters())
+            trainable_params = sum(p.numel() for p in base_model.parameters() if p.requires_grad)
+            print(f"Model parameters: total={total_params} ({total_params/1e6:.2f}M), trainable={trainable_params} ({trainable_params/1e6:.2f}M)")
 
             if self.config.model.class_cond:
                 ckpt = os.path.join(self.args.exp, 'logs/imagenet/%dx%d_classifier.pt' % (
@@ -530,7 +541,7 @@ class Diffusion(object):
                         config.data.image_size,
                         device=self.device,
                     )
-            save_imgs = False
+            save_imgs = True
             only_mean = False
             folder_for_all_steps_img=None
             diff_priv = False
@@ -548,7 +559,8 @@ class Diffusion(object):
             else:
                 gaussian_kern = False
             if save_imgs:
-                folder_for_all_steps_img = os.path.join(parent_target_dir,image_name+f"_{self.args.per}")
+                folder_for_all_steps_img = os.path.join(dataset_inference_path,image_name+f"_{self.args.per}")
+                #folder_for_all_steps_img = os.path.join(parent_target_dir,image_name+f"_{self.args.per}")
             # Get the actual indices of the images in the dataset
             with torch.no_grad():           
                 x, _ = ddpg_diffusion(x, model, self.betas, A_funcs, y, sigma_y, cls_fn=cls_fn, classes=classes, config=config, args=args,

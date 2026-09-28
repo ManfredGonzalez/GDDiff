@@ -11,7 +11,7 @@
             "program": "${file}",
             "console": "integratedTerminal",
             "args": ["--config", "celeba_hq.yml", "--path_y","celeba_hq", "--deg","deblur_gauss", "--sigma_y", "0.05",
-                      "--inject_noise", "1", "--gamma", "8", "--zeta", "0.5", "--eta_tilde", "0.7", "--per", "0.4"
+                      "--inject_noise", "1", "--gamma", "8", "--zeta", "0.5", "--eta_tilde", "0.7", "--per", "0.5"
                     ]
         }
     ]
