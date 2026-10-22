@@ -10,6 +10,24 @@ import matplotlib.pyplot as plt
 import cv2
 
 class_num = 951
+FUSION_TAG = 'img'  # file name used by the opt-in GDDIFF_FUSION_LOG dump; set per image by the caller
+# Opt-in ablation of the average-face branch (reviewer R2.4); unset = the published method ('avg').
+#   avg         x0 and residual averaged over G and L, zero mask Z afterwards
+#   from_G      x0 and residual taken from the Gaussian branch only (no averaging), then Z
+#   from_L      x0 and residual taken from the LoG branch only (no averaging), then Z
+#   no_res_avg  x0 averaged, residual taken from the Gaussian branch only, then Z
+#   no_zmask    x0 and residual averaged, but the branch keeps the Gaussian weight instead of Z
+AVG_ABLATION = os.environ.get('GDDIFF_AVG_ABLATION', 'avg')
+assert AVG_ABLATION in ('avg', 'from_G', 'from_L', 'no_res_avg', 'no_zmask'), AVG_ABLATION
+
+
+def _branch_pick(t, mode):
+    """Value used to spawn the average-face branch from a (G, L) batch, keeping the batch dim."""
+    if mode == 'from_G':
+        return t[0:1]
+    if mode == 'from_L':
+        return t[1:2]
+    return t.mean(dim=0, keepdim=True)
 
 def save_img(i,path,config,img,b_num):
     if not os.path.exists(path):
@@ -270,7 +288,7 @@ def ddpg_diffusion(x, model, b, A_funcs, y, sigma_y, cls_fn=None, classes=None, 
                 x0_t = (xt - et * (1 - at).sqrt()) / at.sqrt()
                 if k_avg:
                     # Compute the mean along the batch dimension (dim=0)
-                    mean_tensor_x_0 = x0_t.mean(dim=0, keepdim=True)  # Keep the batch dimension
+                    mean_tensor_x_0 = _branch_pick(x0_t, AVG_ABLATION)  # mean over G, L unless ablated
                     # Concatenate along the batch dimension
                     x0_t = torch.cat([x0_t, mean_tensor_x_0], dim=0)
                     n = n+1
@@ -368,9 +386,9 @@ def ddpg_diffusion(x, model, b, A_funcs, y, sigma_y, cls_fn=None, classes=None, 
 
                         # Stack along the batch dimension (B=3)
                         batch_kernel_tensor = torch.stack([
-                            gaussian_kernel_tensor, 
-                            laplacian_kernel_tensor, 
-                            zerokernel_tensor
+                            gaussian_kernel_tensor,
+                            laplacian_kernel_tensor,
+                            gaussian_kernel_tensor if AVG_ABLATION == 'no_zmask' else zerokernel_tensor
                         ], dim=0)  # Shape: (3, 1, 256, 256)
                     elif n==2 and not k_avg:
                         # Ensure each kernel has shape (1, 256, 256) by adding a channel dimension
@@ -499,8 +517,17 @@ def ddpg_diffusion(x, model, b, A_funcs, y, sigma_y, cls_fn=None, classes=None, 
                 xt_next = at_next.sqrt() * xt_next_tilde + c1 * et_gauss + c2 * et_hat
 
                 if k_avg:
+                    # Opt-in diagnostics (reviewer request on branch correlation): set GDDIFF_FUSION_LOG
+                    # to a directory to dump the per-branch residuals and x0 estimates at t_mu.
+                    if os.environ.get('GDDIFF_FUSION_LOG'):
+                        log_dir = os.environ['GDDIFF_FUSION_LOG']
+                        os.makedirs(log_dir, exist_ok=True)
+                        np.savez(os.path.join(log_dir, f"{FUSION_TAG}.npz"),
+                                 et_hat=et_hat.detach().cpu().numpy().astype(np.float16),
+                                 x0_t=x0_t.detach().cpu().numpy().astype(np.float16),
+                                 t=i, face_bbox=np.array(face_bbox if face_bbox else [-1, -1, -1, -1]))
                     # Compute the mean along the batch dimension (dim=0)
-                    et_hat_avg = et_hat.mean(dim=0, keepdim=True)  # Keep the batch dimension
+                    et_hat_avg = _branch_pick(et_hat, 'from_G' if AVG_ABLATION == 'no_res_avg' else AVG_ABLATION)
                     et_gauss_mean = torch.randn_like(mean_tensor_x_0)
                     at_next_mean = at_next[-1].sqrt().unsqueeze(0)
                     xt_next_mean =  at_next_mean * xt_next_tilde_mean + c1[-1].unsqueeze(0) * et_gauss_mean + c2[-1].unsqueeze(0) * et_hat_avg

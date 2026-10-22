@@ -1,0 +1,45 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "GDDiff: Spatially Weighted Guided Diffusion for Face De-Identification"
+abstract: >-
+  Code for "Reconstruct, Don't Retrain: Spatially Weighted Guided Diffusion for Face
+  De-Identification". GDDiff is a training-free face de-identification framework that applies
+  Gaussian and Laplacian-of-Gaussian spatial weighting to the data-consistency guidance of a
+  pretrained diffusion sampler, with a multi-branch sampler producing three outputs of increasing
+  recognizability. Includes the evaluation and revision-analysis scripts.
+type: software
+version: "1.1"
+license: MIT
+repository-code: "https://github.com/ManfredGonzalez/GDDiff"
+keywords:
+  - face de-identification
+  - diffusion models
+  - privacy
+authors:
+  - family-names: "Gonzalez-Hernandez"
+    given-names: "Manfred"
+    affiliation: "University of Ljubljana, Faculty of Computer and Information Science, Slovenia"
+  - family-names: "Xie-Li"
+    given-names: "Danny"
+    affiliation: "Costa Rica Institute of Technology, Cartago, Costa Rica"
+  - family-names: "Fallas-Moya"
+    given-names: "Fabian"
+    affiliation: "University of Costa Rica, Cartago, Costa Rica"
+  - family-names: "Tomašević"
+    given-names: "Darian"
+    affiliation: "University of Ljubljana, Faculty of Computer and Information Science, Slovenia"
+  - family-names: "Šajn"
+    given-names: "Luka"
+    affiliation: "University of Ljubljana, Faculty of Computer and Information Science, Slovenia"
+  - family-names: "Peer"
+    given-names: "Peter"
+    affiliation: "University of Ljubljana, Faculty of Computer and Information Science, Slovenia"
+  - family-names: "Štruc"
+    given-names: "Vitomir"
+    affiliation: "University of Ljubljana, Faculty of Electrical Engineering, Slovenia"
+  - family-names: "Emeršič"
+    given-names: "Žiga"
+    affiliation: "University of Ljubljana, Faculty of Computer and Information Science, Slovenia"
+  - family-names: "Meden"
+    given-names: "Blaž"
+    affiliation: "University of Ljubljana, Faculty of Computer and Information Science, Slovenia"

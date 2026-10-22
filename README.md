@@ -491,25 +491,50 @@ Supporting tooling in this repo:
 
 A few things to know before treating a local run as a reproduction of the paper's tables:
 
-- **Reverse diffusion steps.** The paper reports **50** reverse diffusion steps. The shipped configs
-  set `T_sampling: 100` ([configs/celeba_hq.yml](configs/celeba_hq.yml)). Set it to 50 to match the
-  paper.
-- **Hyperparameters.** The paper states η = 0.85, c = 1.0, ζ = 0.3. The shipped run scripts use
-  `--eta_tilde 0.7 --scale_ls 1.0 --zeta 0.5`. Note that `eta_tilde` is **not** η directly — the
-  code uses `η_reg = max(1e-4, σ_y² · eta_tilde)`, a different parameterization — so these values
-  are not comparable term by term.
-- **Measurement operator.** The paper's derivation specializes to `A = I` (pure denoising). The
-  shipped scripts run `--deg deblur_gauss`, a mild near-uniform 5-tap blur
-  ([diffusion.py:379-389](guided_diffusion/diffusion.py#L379-L389)). A true `--deg denoising` path
-  also exists (SVD operators only).
-- **Face detector.** The paper describes BlazeFace via MediaPipe for bbox alignment; this code uses
-  the OpenCV Haar cascade plus a centered fallback box. MediaPipe Face Mesh is used only for the
-  landmark-based utility evaluation.
+- **Reverse diffusion steps.** All reported results use **100** reverse diffusion steps, as set in
+  the shipped config (`T_sampling: 100`, [configs/celeba_hq.yml](configs/celeba_hq.yml)); the first
+  submission's mention of 50 steps was corrected in the revision.
+- **Hyperparameters.** All reported results use `--eta_tilde 0.7 --scale_ls 1.0 --zeta 0.5 --gamma 8
+  --sigma_y 0.05` (c = 1.0, ζ = 0.5). The back-projection regularizer is parameterized as
+  `η_reg = max(1e-4, σ_y² · eta_tilde)`, i.e. η̃ = 0.7 scaled by the observation-noise variance.
+- **Measurement operator.** All reported results use `--deg deblur_gauss`: the observation is
+  `y = A x + noise` with A a mild, near-uniform 5-tap Gaussian blur
+  ([diffusion.py:379-389](guided_diffusion/diffusion.py#L379-L389)), and the guidance uses A's
+  pseudo-inverse and transpose. The closed-form expressions for `A = I` given in the paper are the
+  pure-denoising special case of the same guidance; a `--deg denoising` path also exists (SVD
+  operators only).
+- **Face detector.** The face box comes from OpenCV's Viola–Jones Haar cascade (first detection;
+  centered 65% fallback box if none), as stated in the revised paper. The cascade file is not tracked
+  (`*.xml` is git-ignored); copy it into the repository root with
+  `python -c "import cv2, shutil; shutil.copy(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml', '.')"`.
+  MediaPipe Face Mesh is used only for the landmark-based utility evaluation.
 - **Resolution.** The base diffusion model operates at 256×256. The paper downsamples 1024×1024
   inputs with bilinear interpolation and upsamples the de-identified outputs back with Lanczos
   resampling; that resize step is external to this sampler.
 - **Determinism.** `--seed` (default `1234`) seeds torch, numpy, and the dataloader workers, but the
   dataloader uses `shuffle=True`, so per-image output filenames depend on the seed.
+
+### Revision experiments
+
+The analyses added during the journal revision are opt-in and leave the default sampler unchanged.
+Environment variables read by the sampler:
+
+| Variable | Effect |
+|:---|:---|
+| `GDDIFF_FUSION_LOG=<dir>` | dump the Gaussian/LoG residuals and x0 estimates at the fusion step t_mu |
+| `GDDIFF_AVG_ABLATION=avg\|from_G\|from_L\|no_res_avg\|no_zmask` | ablate how the average-face branch is formed |
+| `GDDIFF_BBOX_PERTURB=shift:<d>\|scale:<s>\|fallback` | perturb the detected face box |
+| `GDDIFF_TIMING_LOG=<file>` | log the sampler wall-clock per image (disables per-image diagnostics) |
+| `GDDIFF_SINGLE_BRANCH=1` | plain single-branch sampler with the same denoiser, for the cost comparison |
+
+Scripts in [analysis/](analysis/): `branch_correlation.py` (cross-branch dependence at t_mu),
+`detection_study.py`, `stratify_by_detection.py`, `make_robustness_inputs.py`,
+`robustness_metrics.py`, `make_failure_gallery.py` (sensitivity to face detection),
+`ablation_metrics.py` (average-face branch ablation), `flops_gddiff.py` (FLOPs);
+[analysis/run_scripts/](analysis/run_scripts/) holds the run commands. The soft-biometric utility
+evaluation (gaze, head pose, expression, age, gender; original vs. de-identified predictions) is in
+[evaluation/soft_biometrics/](evaluation/soft_biometrics/). These scripts use absolute paths of the
+authors' machine and the deid-toolkit dataset layout; adapt the path constants at the top of each file.
 
 ---
 

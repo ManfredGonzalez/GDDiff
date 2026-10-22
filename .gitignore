@@ -19,3 +19,5 @@ custom_run.py
 *.svg
 evaluation*.sh
 .vscode/
+# derived dataset images and logs of the revision experiments (RaFD/LFW licences forbid redistribution)
+exp/robustness_work/

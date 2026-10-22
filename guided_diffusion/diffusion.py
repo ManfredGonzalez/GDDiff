@@ -11,6 +11,7 @@ import torch.utils.data as data
 from datasets import get_dataset, data_transform, inverse_data_transform
 from functions.ckpt_util import get_ckpt_path, download
 from functions.ddpg_scheme import ddpg_diffusion
+import functions.ddpg_scheme as ddpg_scheme_module
 
 import torchvision.utils as tvu
 
@@ -43,6 +44,34 @@ def get_fallback_bbox(image_size, scale=0.65):
     y_max = min(height, y_center + bbox_size // 2)
 
     return (x_min, y_min, x_max, y_max)
+
+
+def perturb_bbox(bbox, spec, image_name, shape):
+    """Robustness study only (opt-in via GDDIFF_BBOX_PERTURB). spec is one of
+    'shift:<d>'  move the centre by d * sqrt(w*h) in a direction fixed per image,
+    'scale:<s>'  scale width and height by s about the centre,
+    'fallback'   replace the box by the centred 65% fallback box.
+    The result is clipped to the image."""
+    import hashlib
+    h_img, w_img = shape
+    x, y, w, h = bbox
+    if spec == 'fallback':
+        x0, y0, x1, y1 = get_fallback_bbox((w_img, h_img))
+        return (x0, y0, x1 - x0, y1 - y0)
+    kind, value = spec.split(':')
+    value = float(value)
+    cx, cy = x + w / 2, y + h / 2
+    if kind == 'shift':
+        angle = int(hashlib.md5(image_name.encode()).hexdigest(), 16) % 3600 / 3600 * 2 * np.pi
+        step = value * np.sqrt(w * h)
+        cx, cy = cx + step * np.cos(angle), cy + step * np.sin(angle)
+    elif kind == 'scale':
+        w, h = w * value, h * value
+    else:
+        raise ValueError(f'unknown GDDIFF_BBOX_PERTURB spec {spec}')
+    x0, y0 = int(round(max(0, cx - w / 2))), int(round(max(0, cy - h / 2)))
+    x1, y1 = int(round(min(w_img, cx + w / 2))), int(round(min(h_img, cy + h / 2)))
+    return (x0, y0, max(1, x1 - x0), max(1, y1 - y0))
 
 def get_gaussian_noisy_img(img, noise_level):
     return img + torch.randn_like(img).cuda() * noise_level
@@ -436,8 +465,8 @@ class Diffusion(object):
 
         #initialize the face detector
         
-        deid = True
-        k = 2
+        deid = os.environ.get('GDDIFF_SINGLE_BRANCH') != '1'  # opt-in plain single-branch DDPG for the cost study
+        k = 2 if deid else None
         if deid:
             face_detector = cv2.CascadeClassifier('haarcascade_frontalface_default.xml')
         else:
@@ -479,6 +508,9 @@ class Diffusion(object):
                     width, height = x_max - x_min, y_max - y_min
 
                 face_bbox = (x_box, y_box, width, height)
+                if os.environ.get('GDDIFF_BBOX_PERTURB'):  # opt-in robustness study (reviewer R2.3)
+                    face_bbox = perturb_bbox(face_bbox, os.environ['GDDIFF_BBOX_PERTURB'],
+                                             os.path.basename(img_path[0]), bgr_image.shape[:2])
             else:
                 face_bbox = None
 
@@ -541,7 +573,7 @@ class Diffusion(object):
                         config.data.image_size,
                         device=self.device,
                     )
-            save_imgs = True
+            save_imgs = not os.environ.get('GDDIFF_TIMING_LOG')  # no per-image diagnostics while timing
             only_mean = False
             folder_for_all_steps_img=None
             diff_priv = False
@@ -558,13 +590,23 @@ class Diffusion(object):
                 dataset_inference_path = os.path.join(parent_target_dir,parent_folder_name_ds)
             else:
                 gaussian_kern = False
-            if save_imgs:
+                dataset_inference_path = self.args.image_folder  # plain restoration writes into the run folder
+            if save_imgs and deid:
                 folder_for_all_steps_img = os.path.join(dataset_inference_path,image_name+f"_{self.args.per}")
                 #folder_for_all_steps_img = os.path.join(parent_target_dir,image_name+f"_{self.args.per}")
             # Get the actual indices of the images in the dataset
-            with torch.no_grad():           
+            if deid:
+                ddpg_scheme_module.FUSION_TAG = f"{image_name}_seed{self.args.seed}_per{self.args.per}"  # GDDIFF_FUSION_LOG file name
+            if os.environ.get('GDDIFF_TIMING_LOG'):
+                torch.cuda.synchronize()
+                t_start = time.perf_counter()
+            with torch.no_grad():
                 x, _ = ddpg_diffusion(x, model, self.betas, A_funcs, y, sigma_y, cls_fn=cls_fn, classes=classes, config=config, args=args,
                                        deid=deid, ckpt_imgs_path=folder_for_all_steps_img,face_bbox=face_bbox,gaussian_kern=gaussian_kern, diff_priv=diff_priv,per=per)
+            if os.environ.get('GDDIFF_TIMING_LOG'):  # opt-in wall-clock of the sampler only (reviewer R2.m2)
+                torch.cuda.synchronize()
+                with open(os.environ['GDDIFF_TIMING_LOG'], 'a') as f_time:
+                    f_time.write(f"{os.path.basename(img_path[0])},{time.perf_counter() - t_start:.4f}\n")
                 
                 #x, _ = ddpg_diffusion_tom(x, model, self.betas, A_funcs, y, sigma_y, cls_fn=cls_fn, classes=classes, config=config, args=args)
             x = [inverse_data_transform(config, xi) for xi in x]
