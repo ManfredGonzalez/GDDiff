@@ -31,13 +31,28 @@ OUT = os.path.join(REPO, 'analysis/results_ablation')
 SETS = {'rafd': 'rafd', 'lfw': 'LFW_unified_orig'}
 VARIANTS = {'full': ('robust_base', 'mean'), 'from_G': ('abl300_from_G', 'mean'),
             'no_zmask': ('abl300_no_zmask', 'mean'), 'gauss': ('robust_base', 'gauss'),
-            'lapl': ('robust_base', 'Lapl')}
+            'lapl': ('robust_base', 'Lapl'),
+            # simpler spatial weightings (GDDIFF_KERNEL_MODE, reviewer R1.4)
+            'unif_mean': ('kern300_uniform', 'mean'), 'unif_gauss': ('kern300_uniform', 'gauss'),
+            'unif_lapl': ('kern300_uniform', 'Lapl'), 'zero_all': ('kern300_zero_all', 'gauss')}
+# t_mu sweep (reviewer R2): Mean-GDDiff at further operating points lambda (0.5 is 'full'); (run, branch, lambda)
+SWEEP = ['0.0', '0.1', '0.2', '0.3', '0.4', '0.6', '0.7', '0.8', '0.9']
+VARIANTS.update({f'lam{p}': (f'sweep300_{p}', 'mean', p) for p in SWEEP})
+# reconstruction attack (reviewer R2.5): outputs re-restored by the plain single-branch sampler (GDDIFF_SINGLE_BRANCH)
+ATTACKED = {'atk_full': 'full', 'atk_lam0.1': 'lam0.1', 'atk_gauss': 'gauss', 'atk_lapl': 'lapl', 'atk_orig': None}
+VARIANTS.update({v: (f'attack300_{v}', 'single') for v in ATTACKED})
+# paired comparisons (a, b): averaging, zero mask, and kernel shape at equal mean attenuation
+PAIRS = [('full', 'from_G'), ('full', 'no_zmask'), ('full', 'gauss'), ('full', 'lapl'), ('gauss', 'unif_gauss'),
+         ('lapl', 'unif_lapl'), ('full', 'unif_mean'), ('full', 'zero_all')]
+PAIRS += [(b, a) for a, b in ATTACKED.items() if b]  # de-identified output vs. its attacked version
 DGM_EVAL = os.environ.get('DGM_EVAL_SRC', '')
 
 
 def out_dir(variant, sub):
-    run, branch = VARIANTS[variant]
-    return os.path.join(SAMPLES, run, sub, f'0.5_{branch}')
+    run, branch, *lam = VARIANTS[variant]
+    if branch == 'single':
+        return os.path.join(SAMPLES, run, sub, 'single')
+    return os.path.join(SAMPLES, run, sub, f'{lam[0] if lam else "0.5"}_{branch}')
 
 
 def reference_dirs():
@@ -81,9 +96,18 @@ def part_identity(args):
         return cache[path]
 
     subset = pd.read_csv(os.path.join(W, 'robust_inputs/subset.csv'))
-    rows = []
+    rows, self_rows = [], []
+    for variant in VARIANTS:
+        for sub, ds in SETS.items():  # per-image identity similarity cos(original, output) for paired tests
+            for n in subset[subset.set == sub].img:
+                p = os.path.join(out_dir(variant, sub), n + '.jpg')
+                if os.path.exists(p):
+                    self_rows.append(dict(variant=variant, set=sub, img=n, self_cos=float(
+                        emb(os.path.join(TOOLKIT, 'root_dir/datasets/aligned', ds, n + '.jpg')) @ emb(p))))
     for variant in VARIANTS:
         ys, ss = [], []
+        if not all(os.path.isdir(out_dir(variant, sub)) for sub in SETS):
+            continue
         for sub, ds in SETS.items():
             names = set(subset[subset.set == sub].img)
             pairs = pd.read_csv(os.path.join(TOOLKIT, 'root_dir/results', f'adaface_optimized_{ds}_0.5_mean_GauDeiDiff.csv'))
@@ -100,6 +124,7 @@ def part_identity(args):
         print(rows[-1], flush=True)
     os.makedirs(OUT, exist_ok=True)
     pd.DataFrame(rows).to_csv(os.path.join(OUT, 'ablation_identity.csv'), index=False)
+    pd.DataFrame(self_rows).to_csv(os.path.join(OUT, 'ablation_identity_per_image.csv'), index=False)
 
 
 def part_quality(args):
@@ -109,6 +134,8 @@ def part_quality(args):
     py = sys.executable
     rows = []
     for variant in VARIANTS:
+        if not all(os.path.isdir(out_dir(variant, sub)) for sub in SETS):
+            continue
         row = dict(variant=variant)
         mse = []
         for sub in SETS:
@@ -147,9 +174,20 @@ def part_summary(args):
     idn = pd.read_csv(os.path.join(OUT, 'ablation_identity.csv'))
     q = pd.read_csv(os.path.join(OUT, 'ablation_quality.csv'))
     df = idn.merge(q, on='variant')
+    per = pd.read_csv(os.path.join(OUT, 'ablation_identity_per_image.csv'))
+    df = df.merge(per.groupby('variant').self_cos.mean().rename('self_cos').reset_index(), on='variant')
     df.to_csv(os.path.join(OUT, 'ablation_summary.csv'), index=False)
     pd.set_option('display.width', 200)
     print(df.round(4).to_string(index=False))
+    from scipy.stats import wilcoxon
+    piv = per.pivot_table(index=['set', 'img'], columns='variant', values='self_cos')
+    print('\npaired Wilcoxon on per-image identity similarity cos(original, output) (higher = less private)')
+    for a, b in PAIRS:
+        if a not in piv or b not in piv:
+            continue
+        ok = piv[[a, b]].dropna()
+        print(f'  {a:>6s} vs {b:<10s} n={len(ok)}  mean {ok[a].mean():.3f} vs {ok[b].mean():.3f}  '
+              f'p={wilcoxon(ok[a], ok[b]).pvalue:.4f}')
 
 
 def main():

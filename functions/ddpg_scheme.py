@@ -21,6 +21,21 @@ AVG_ABLATION = os.environ.get('GDDIFF_AVG_ABLATION', 'avg')
 assert AVG_ABLATION in ('avg', 'from_G', 'from_L', 'no_res_avg', 'no_zmask'), AVG_ABLATION
 
 
+# Opt-in simpler spatial weightings (reviewer R1.4); unset = the published Gaussian / LoG fields.
+#   uniform   each field is replaced inside the face box by its own mean over the box at that step
+#             (same average attenuation, no spatial shape); ones outside, as for the published fields
+#   zero_all  both branches use the zero mask inside the box for the entire run
+KERNEL_MODE = os.environ.get('GDDIFF_KERNEL_MODE', 'default')
+assert KERNEL_MODE in ('default', 'uniform', 'zero_all'), KERNEL_MODE
+
+
+def _uniform_in_box(kernel, bbox):
+    x, y, w, h = [int(v) for v in bbox]
+    out = kernel.copy()
+    out[y:y + h, x:x + w] = kernel[y:y + h, x:x + w].mean()
+    return out
+
+
 def _branch_pick(t, mode):
     """Value used to spawn the average-face branch from a (G, L) batch, keeping the batch dim."""
     if mode == 'from_G':
@@ -233,6 +248,7 @@ def ddpg_diffusion(x, model, b, A_funcs, y, sigma_y, cls_fn=None, classes=None, 
         skip = config.diffusion.num_diffusion_timesteps//config.sampling.T_sampling
         
         x0_preds = []
+        traj = []
         k_avg = False
         if isinstance(x, list):
             x = torch.cat(x, dim=0)
@@ -367,6 +383,12 @@ def ddpg_diffusion(x, model, b, A_funcs, y, sigma_y, cls_fn=None, classes=None, 
                         save_gaussian_heatmap(gaussian_kernel_fixed, os.path.join(path_for_img,f'{i}.png'))
                     gaussian_kernel_fixed_tensor = torch.tensor(gaussian_kernel_fixed, dtype=torch.float32).to(x0_t.device)
                     zerokernel = create_zero_kernel((x0_t.size(2), x0_t.size(3)), face_bbox)#np.ones((x0_t.size(2), x0_t.size(3)), dtype=np.float32)
+                    if KERNEL_MODE == 'uniform':  # same mean attenuation inside the box, no spatial shape
+                        gaussian_kernel = _uniform_in_box(gaussian_kernel, face_bbox)
+                        laplacian_kernel = _uniform_in_box(laplacian_kernel, face_bbox)
+                    elif KERNEL_MODE == 'zero_all':  # constant zero attenuation inside the box for the whole run
+                        gaussian_kernel = zerokernel.copy()
+                        laplacian_kernel = zerokernel.copy()
                     if ckpt_imgs_path is not None and i in time_step_to_save:
                         path_for_img = os.path.join(ckpt_imgs_path,f'zerokernel_fixed_heatmap')
                         if not os.path.exists(path_for_img):
@@ -549,6 +571,8 @@ def ddpg_diffusion(x, model, b, A_funcs, y, sigma_y, cls_fn=None, classes=None, 
                     for b_idx in  range(xt_next_mean.size(0)):
                         save_img(i,path_for_img,config,xt_next_mean[b_idx].unsqueeze(0).clone(),b_idx)
                 x0_preds.append(x0_t.to('cpu'))
+                if os.environ.get('GDDIFF_TRAJ_LOG'):  # opt-in: per-step x0 estimates of all branches (intro figure)
+                    traj.append((int(i), x0_t.detach().half().cpu()))
                 xs.append(xt_next.to('cpu'))
 
                 if (step_idx == percentile_to_mean) and deid:
@@ -564,6 +588,10 @@ def ddpg_diffusion(x, model, b, A_funcs, y, sigma_y, cls_fn=None, classes=None, 
             xs.append(x0_t.to('cpu'))
     if ckpt_imgs_path is not None and i in time_step_to_save:
         plot_alphas(alphas,os.path.join(ckpt_imgs_path,'alphas_plot.pdf'))
+
+    if os.environ.get('GDDIFF_TRAJ_LOG'):
+        os.makedirs(os.environ['GDDIFF_TRAJ_LOG'], exist_ok=True)
+        torch.save(traj, os.path.join(os.environ['GDDIFF_TRAJ_LOG'], f"{FUSION_TAG}.pt"))
 
     return [xs[-1]], [x0_preds[-1]]
 
@@ -608,4 +636,4 @@ def _check_times(times, t_0, T_sampling):
     # Value range
     for t in times:
         assert t >= t_0, (t, t_0)
-        assert t <= T_sampling, (t, T_sampling)
+        assert t <= T_sampling, (t, T_sampling)

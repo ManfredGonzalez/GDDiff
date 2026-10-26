@@ -579,10 +579,10 @@ class Diffusion(object):
             diff_priv = False
             per = 1-(self.args.per+0.1)
             
+            image_type = os.path.basename(img_path[0])[-4:]
+            image_name = os.path.basename(img_path[0])[:-4]
             if deid:
                 gaussian_kern = True
-                image_type = os.path.basename(img_path[0])[-4:]
-                image_name = os.path.basename(img_path[0])[:-4]
                 parent_dir_name = os.path.basename(os.path.dirname(img_path[0]))
                 parent_target_dir = os.path.dirname(self.args.image_folder)
                 target_path = os.path.join(parent_target_dir,parent_dir_name+'_deid')
@@ -590,7 +590,9 @@ class Diffusion(object):
                 dataset_inference_path = os.path.join(parent_target_dir,parent_folder_name_ds)
             else:
                 gaussian_kern = False
-                dataset_inference_path = self.args.image_folder  # plain restoration writes into the run folder
+                # plain restoration: <run parent>/<input subfolder>/single/<image name>
+                dataset_inference_path = os.path.join(os.path.dirname(self.args.image_folder),
+                                                      os.path.basename(os.path.dirname(img_path[0])))
             if save_imgs and deid:
                 folder_for_all_steps_img = os.path.join(dataset_inference_path,image_name+f"_{self.args.per}")
                 #folder_for_all_steps_img = os.path.join(parent_target_dir,image_name+f"_{self.args.per}")
@@ -623,8 +625,9 @@ class Diffusion(object):
             else:
                 for j in range(x[0].size(0)):
                     if not deid:
+                        os.makedirs(os.path.join(dataset_inference_path, "single"), exist_ok=True)
                         tvu.save_image(
-                            x[0][j], os.path.join(self.args.image_folder, f"{idx_so_far + j}_{0}.png")
+                            x[0][j], os.path.join(dataset_inference_path, "single", f"{image_name}{image_type}")
                         )
                     else:
                         method = "gauss"

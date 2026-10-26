@@ -8,7 +8,8 @@ abstract: >-
   pretrained diffusion sampler, with a multi-branch sampler producing three outputs of increasing
   recognizability. Includes the evaluation and revision-analysis scripts.
 type: software
-version: "1.1"
+version: "1.2"
+doi: "10.5281/zenodo.23576493"
 license: MIT
 repository-code: "https://github.com/ManfredGonzalez/GDDiff"
 keywords:

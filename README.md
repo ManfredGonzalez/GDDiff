@@ -44,14 +44,17 @@ privacy–utility trade-off — no retraining required.
 
 - A training-free de-identification framework applying spatially weighted Gaussian / Lpl guidance to
   the reverse diffusion process, with explicit control over the privacy–fidelity trade-off.
-- A mathematical interpretation of the method as a **spatially preconditioned** optimization process
-  (gradient-descent dynamics, variance reduction via averaged residuals, stability under a
-  small-step condition).
+- A mathematical interpretation of the data-consistency substep as **spatially preconditioned**
+  gradient descent (a conditional, small-step property of the guidance update, not a guarantee of
+  identity suppression), with a dispersion bound for the averaged residual that holds for any
+  dependence between the branches.
 - A **multi-branch sampler** producing three de-identified outputs per input, letting the user pick
   their preferred privacy–utility balance at inference time.
-- Evaluation across four datasets (RaFD, XM2VTS, LFW, CALFW) on identity suppression, image quality,
-  and data utility, with the Mean-GDDiff variants taking the **top three Friedman mean ranks** among
-  13 methods.
+- Evaluation across four datasets (RaFD, XM2VTS, LFW, CALFW) against 7 baselines, with four
+  face verifiers, image quality, and soft-biometric utility (gaze, head pose, expression, age,
+  gender). In separate Friedman analyses, Mean-GDDiff (λ=0.5) ranks second in identity suppression
+  and Lpl-GDDiff obtains the best overall rank; the variants span the privacy–utility frontier.
+  Identity suppression is empirical (four verifiers), not a formal privacy guarantee.
 
 ---
 
@@ -289,32 +292,35 @@ Same pattern: CPP-DeID (0.9) buys its AUC of 0.60 with an FD of 2121.45 and MSE 
 Mean-GDDiff (0.5) reaches AUC 0.70 / 0.62 at FD 362.03 / 250.10 and MSE 0.03 — an order of magnitude
 less distortion for comparable identity suppression.
 
-### Overall ranking (Friedman test)
+### Rankings (Friedman tests per dimension)
 
-Across all four datasets and all metrics (AUC, F1, FD, MSE, gACC), the 13 methods differ
-significantly: **χ²(12) = 57.75, p < 0.001**, Kendall's **W = 0.283** (modest agreement in rankings
-across datasets, i.e. method performance is dataset-dependent).
+Privacy, image quality, and utility are tested separately (`analysis/friedman_groups.py`): privacy
+ranks the AUC of four verifiers × four datasets (16 blocks), image quality FD and MSE × four datasets
+(8 blocks), and utility the deviation of gaze, head pose, expression, age, and gender predictions
+from those on the original images × four datasets (20 blocks; the two estimators of each attribute
+are averaged). All three reject equal performance (privacy χ²(12) = 176.5, W = 0.92; quality
+χ²(12) = 70.5, W = 0.73; utility χ²(12) = 139.5, W = 0.58; all p < 10⁻⁹).
 
-| Method | Mean rank ↓ |
-|:---|---:|
-| **Mean-GDDiff (0.1)** | **4.73** |
-| **Mean-GDDiff (0.2)** | **4.88** |
-| **Mean-GDDiff (0.5)** | **5.20** |
-| DeepPrivacy | 6.08 |
-| FAMS | 6.11 |
-| **Gauss-GDDiff** | 6.17 |
-| CLEANIR | 6.56 |
-| **Lpl-GDDiff** | 6.64 |
-| CPP-DeID (0.9) | 7.17 |
-| FADM | 7.20 |
-| LDFA | 7.79 |
-| CPP-DeID (0.5) | 11.20 |
-| AMT-GAN | 11.20 |
+| Method | Privacy | Image quality | Utility | Overall (equal weight) |
+|:---|---:|---:|---:|---:|
+| **Lpl-GDDiff** | 11.00 | **1.75** | 4.32 | **5.69** |
+| FADM | 10.28 | 5.25 | 2.20 | 5.91 |
+| CLEANIR | 4.25 | 5.88 | 7.62 | 5.92 |
+| FAMS | 5.78 | 5.50 | 6.80 | 6.03 |
+| **Mean-GDDiff (0.1)** | 5.69 | 5.00 | 7.42 | 6.04 |
+| **Gauss-GDDiff** | 8.88 | 3.38 | 6.45 | 6.23 |
+| **Mean-GDDiff (0.2)** | 3.78 | 6.62 | 9.10 | 6.50 |
+| DeepPrivacy | 8.00 | 4.38 | 8.25 | 6.88 |
+| **Mean-GDDiff (0.5)** | 2.00 | 8.38 | 10.60 | 6.99 |
+| CPP-DeID (0.9) | **1.91** | 12.50 | 10.40 | 8.27 |
+| AMT-GAN | 13.00 | 10.62 | **1.62** | 8.42 |
+| LDFA | 4.72 | 10.88 | 10.58 | 8.72 |
+| CPP-DeID (0.5) | 11.72 | 10.88 | 5.62 | 9.41 |
 
-**The three Mean-GDDiff variants take the top three mean ranks.** Under the Bonferroni–Dunn test
-(CD = 3.827, α = 0.05), Mean-GDDiff (0.1) significantly outperforms LDFA, CPP-DeID (0.5), and
-AMT-GAN; differences against the mid-field (DeepPrivacy, FADM, FAMS) are not statistically
-significant.
+Mean-GDDiff (0.5) and CPP-DeID (0.9) share the top of the privacy ranking, but CPP-DeID (0.9) ranks
+last in image quality. Lpl-GDDiff obtains the best overall rank; the top five overall differ by less
+than the Bonferroni–Dunn critical difference (privacy 3.95, quality 5.58, utility 3.53), so the
+GDDiff variants are best read as spanning the privacy–utility frontier rather than as a single winner.
 
 ### Data utility: landmarks and segmentation
 
@@ -391,8 +397,7 @@ A few things to know before treating a local run as a reproduction of the paper'
 - **Measurement operator.** All reported results use `--deg deblur_gauss`: the observation is
   `y = A x + noise` with A a mild, near-uniform 5-tap Gaussian blur
   ([diffusion.py:379-389](guided_diffusion/diffusion.py#L379-L389)), and the guidance uses A's
-  pseudo-inverse and transpose. The closed-form expressions for `A = I` given in the paper are the
-  pure-denoising special case of the same guidance; a `--deg denoising` path also exists (SVD
+  pseudo-inverse and transpose. Pure denoising (`A = I`) is the special case of the same guidance; a `--deg denoising` path also exists (SVD
   operators only).
 - **Face detector.** The face box comes from OpenCV's Viola–Jones Haar cascade (first detection;
   centered 65% fallback box if none), as stated in the revised paper. The cascade file is not tracked
@@ -416,12 +421,14 @@ Environment variables read by the sampler:
 | `GDDIFF_AVG_ABLATION=avg\|from_G\|from_L\|no_res_avg\|no_zmask` | ablate how the average-face branch is formed |
 | `GDDIFF_BBOX_PERTURB=shift:<d>\|scale:<s>\|fallback` | perturb the detected face box |
 | `GDDIFF_TIMING_LOG=<file>` | log the sampler wall-clock per image (disables per-image diagnostics) |
-| `GDDIFF_SINGLE_BRANCH=1` | plain single-branch sampler with the same denoiser, for the cost comparison |
+| `GDDIFF_SINGLE_BRANCH=1` | plain single-branch sampler with the same denoiser (cost comparison; reconstruction attack), outputs in `<run>/<set>/single/` |
+| `GDDIFF_KERNEL_MODE=default\|uniform\|zero_all` | simpler masks: uniform field with the same in-box mean, or zero weight in every branch |
+| `GDDIFF_TRAJ_LOG=<dir>` | save every branch's x0 estimate at every step (identity trajectories, intro figure) |
 
 Scripts in [analysis/](analysis/): `branch_correlation.py` (cross-branch dependence at t_mu),
 `detection_study.py`, `stratify_by_detection.py`, `make_robustness_inputs.py`,
 `robustness_metrics.py`, `make_failure_gallery.py` (sensitivity to face detection),
-`ablation_metrics.py` (average-face branch ablation), `flops_gddiff.py` (FLOPs);
+`ablation_metrics.py` (average-face branch, mask-shape, t_mu sweep and reconstruction-attack identity/quality), `ablation_utility.py` (their soft-biometric utility), `tmu_sweep.py` (λ sweep figure), `friedman_groups.py` (per-dimension Friedman ranks), `glasses_study.py` (eyeglasses preservation), `intro_trajectories.py` (identity along sampling), `method_overview.py` (weighting fields and estimates per branch), `flops_gddiff.py` (FLOPs);
 [analysis/run_scripts/](analysis/run_scripts/) holds the run commands. The soft-biometric utility
 evaluation (gaze, head pose, expression, age, gender; original vs. de-identified predictions) is in
 [evaluation/soft_biometrics/](evaluation/soft_biometrics/). These scripts use absolute paths of the

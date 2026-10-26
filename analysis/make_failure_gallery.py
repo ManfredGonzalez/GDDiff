@@ -39,7 +39,7 @@ def show(ax, path, title, boxes=()):
     ax.imshow(Image.open(path).convert('RGB').resize((256, 256)))
     for (x, y, w, h), color in boxes:
         ax.add_patch(Rectangle((x, y), w, h, fill=False, lw=1.6, ec=color))
-    ax.set_title(title, fontsize=7.5)
+    ax.set_title(title, fontsize=6.6, pad=2)
     ax.axis('off')
 
 
@@ -68,9 +68,9 @@ def main():
     picks = [r for _, r in off.iterrows() if existing_output(r.dataset, r.img)][:2]
     fb = [r for _, r in det[det.fallback & det.mtcnn_found].iterrows() if existing_output(r.dataset, r.img)][:1]
     for r in picks + fb:
-        kind = 'fallback (no detection)' if r.fallback else f'misplaced box, IoU {r.iou:.2f}'
+        kind = 'no detection (fallback)' if r.fallback else f'misplaced box (IoU {r.iou:.2f})'
         rows.append(dict(input=os.path.join(TOOLKIT, 'datasets/aligned', r.dataset, r.img + '.jpg'),
-                         input_title=f'{DS_NAME[r.dataset]} input: {kind}',
+                         input_title=f'{DS_NAME[r.dataset]}: {kind}',
                          boxes=[(box_of(r), 'red'), (ref_of(r), 'lime')],
                          left=None, right=existing_output(r.dataset, r.img), right_title='Mean-GDDiff output'))
 
@@ -85,22 +85,34 @@ def main():
         inp, spec = CONDITIONS[cond]
         box = perturb_bbox(box_of(r), spec, w.img + '.jpg') if spec else box_of(r)
         rows.append(dict(input=os.path.join(args.inputs, inp, w.set, w.img + '.jpg'),
-                         input_title=f'{DS_NAME[SETS[w.set]]} input: {COND_LABEL[cond]}',
+                         input_title=f'{DS_NAME[SETS[w.set]]}: {COND_LABEL[cond]}',
                          boxes=[(box, 'red'), (ref_of(r), 'lime')],
                          left=output_path('base', w.set, 'mean', w.img),
-                         left_title=f'unperturbed output (cos {base.iloc[0]:.2f})' if len(base) else 'unperturbed output',
+                         left_title=f'unperturbed (cos {base.iloc[0]:.2f})' if len(base) else 'unperturbed',
                          right=output_path(cond, w.set, 'mean', w.img),
-                         right_title=f'{COND_LABEL[cond]} output (cos {w.self_cos:.2f})'))
+                         right_title=f'perturbed (cos {w.self_cos:.2f})'))
 
-    fig, axes = plt.subplots(len(rows), 3, figsize=(6.2, 2.15 * len(rows)))
-    for ax_row, r in zip(axes, rows):
-        show(ax_row[0], r['input'], r['input_title'], r['boxes'])
-        if r['left']:
-            show(ax_row[1], r['left'], r['left_title'])
-        else:
-            ax_row[1].axis('off')
-        show(ax_row[2], r['right'], r['right_title'])
-    fig.tight_layout(h_pad=0.6, w_pad=0.3)
+    # two panels side by side: (a) real failures, input | output; (b) controlled, input | unperturbed | perturbed
+    real = [r for r in rows if r['left'] is None]
+    ctrl = [r for r in rows if r['left'] is not None]
+    n_rows = max(len(real), len(ctrl))
+    fig = plt.figure(figsize=(7.1, 1.55 * n_rows + 0.12))
+    gs = fig.add_gridspec(n_rows, 6, width_ratios=[1, 1, 0.12, 1, 1, 1], wspace=0.06, hspace=0.28,
+                          left=0.01, right=0.99, bottom=0.01, top=1 - 0.1 / (1.55 * n_rows + 0.12))
+    for i, r in enumerate(real):
+        show(fig.add_subplot(gs[i, 0]), r['input'], r['input_title'], r['boxes'])
+        show(fig.add_subplot(gs[i, 1]), r['right'], 'Mean-GDDiff output')
+    for i, r in enumerate(ctrl):
+        show(fig.add_subplot(gs[i, 3]), r['input'], r['input_title'], r['boxes'])
+        show(fig.add_subplot(gs[i, 4]), r['left'], r['left_title'])
+        show(fig.add_subplot(gs[i, 5]), r['right'], r['right_title'])
+    if len(real) < n_rows:  # free cell under panel (a): box legend
+        ax = fig.add_subplot(gs[len(real):, 0:2])
+        ax.axis('off')
+        ax.legend(handles=[Rectangle((0, 0), 1, 1, fill=False, ec='red', lw=1.6, label='face box used by GDDiff'),
+                           Rectangle((0, 0), 1, 1, fill=False, ec='lime', lw=1.6, label='MTCNN reference box')],
+                  loc='center', frameon=False, fontsize=7.5)
+    # panel descriptions are given in the caption (left: real failures, right: controlled perturbations)
     fig.savefig(args.out, dpi=300)
     fig.savefig(args.out.replace('.pdf', '.png'), dpi=150)
     print('saved', args.out, len(rows), 'rows')
